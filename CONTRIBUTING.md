@@ -2,7 +2,7 @@
 
 Thanks for helping improve Freedraw PDF. Bug reports, focused fixes, and reproducible test cases are welcome.
 
-## Report a Problem
+## Report a problem
 
 Open a [GitHub issue](https://github.com/vividasasana/freedraw-pdf/issues) and include:
 
@@ -14,7 +14,7 @@ Open a [GitHub issue](https://github.com/vividasasana/freedraw-pdf/issues) and i
 
 Do not include private PDFs, vault data, credentials, or other sensitive content.
 
-## Develop Locally
+## Develop locally
 
 Requirements:
 
@@ -27,11 +27,11 @@ npm run check
 npm run build
 ```
 
-Work in `v2/`; `v0/` and `v1/` are archived implementations. Root commands delegate to v2, and root discovery metadata must match v2.
+The repository root contains the current plugin. Work in `main.ts` and `src/`. Local snapshots and test vaults are ignored and must stay out of commits.
 
 Use `npm run dev` for watch mode. Test PDF interaction changes with mouse and touch or stylus input when applicable.
 
-## Submit a Change
+## Submit a change
 
 Keep pull requests focused on one problem. Describe the behavior change, testing performed, and any remaining device-specific limitations.
 
@@ -43,3 +43,9 @@ Before submitting:
 4. Verify controls remain usable in Obsidian desktop and mobile layouts when the change affects UI or input.
 
 By submitting a contribution, you agree that it may be distributed under the repository's [MIT License](LICENSE).
+
+## Prepare a release
+
+Use the next unused version in the 0.13.x series, such as `0.13.3`. Keep `manifest.json`, `package.json`, `package-lock.json`, and `versions.json` consistent. The Git tag must be the version alone, without a prefix or development-folder name.
+
+Add release notes in `docs/releases/`, run the checks and production build, then push the version tag. GitHub Actions publishes the plugin files and ZIP from the tagged source. On Windows, `npm run package` creates a local ZIP in `dist/`.

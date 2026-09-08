@@ -8,13 +8,13 @@ try {
     $env:OneDrive = Join-Path $fixtureRoot 'cloud'
     $env:OBSIDIAN_ONEDRIVE_VAULT = Join-Path $env:OneDrive 'destination'
     New-Item -ItemType Directory -Force -Path $env:OneDrive | Out-Null
-    foreach ($version in @('v0', 'v1', 'v2')) {
+    foreach ($version in @('plugin')) {
         $fixtureProject = Join-Path $fixtureRoot $version
         $fixtureScripts = Join-Path $fixtureProject 'scripts'
         $fixtureVault = Join-Path $fixtureRoot ($version + '-vault')
         $fixturePlugin = Join-Path $fixtureVault '.obsidian/plugins/freedraw-pdf'
         New-Item -ItemType Directory -Force -Path $fixtureScripts,$fixturePlugin | Out-Null
-        Copy-Item -LiteralPath (Join-Path $reviewRoot "$version/scripts/deploy-test.ps1") -Destination $fixtureScripts
+        Copy-Item -LiteralPath (Join-Path $reviewRoot 'scripts/deploy-test.ps1') -Destination $fixtureScripts
         $fixtureScript = Join-Path $fixtureScripts 'deploy-test.ps1'
         Set-Content -LiteralPath (Join-Path $fixtureProject 'manifest.json') -Value '{"id":"freedraw-pdf","version":"0.0.0"}'
         Set-Content -LiteralPath (Join-Path $fixtureProject 'main.js') -Value '// fixture build'
@@ -43,7 +43,7 @@ try {
             if (!$rejected -or $configHash -ne (Get-FileHash -LiteralPath $fixtureConfig).Hash) { throw 'Malformed configuration was not preserved and rejected.' }
         }
     }
-    Write-Output 'Deployment privacy passed for v0/v1/v2: plugin assets only, no cloud copy, notes/settings/plugin lists preserved, malformed configuration rejected.'
+    Write-Output 'Deployment privacy passed: plugin assets only, no cloud copy, notes/settings/plugin lists preserved, malformed configuration rejected.'
 } finally {
     $env:OneDrive = $savedCloudRoot
     $env:OBSIDIAN_ONEDRIVE_VAULT = $savedCloudVault

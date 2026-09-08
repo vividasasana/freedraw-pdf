@@ -2,7 +2,7 @@
 
 Write and draw on PDFs in Obsidian. Freedraw PDF lets you add handwritten notes, highlights, text, and images, insert extra writing pages, and export an annotated copy. Your original PDF stays unchanged.
 
-![Handwritten PDF annotations beside a live embed in an Obsidian note](v1/docs/images/freedraw-pdf-annotated-embed-demo.png)
+![Handwritten PDF annotations beside a live embed in an Obsidian note](docs/images/freedraw-pdf-annotated-embed-demo.png)
 
 The PDF is open on the left. On the right, an Obsidian note displays an annotated region from the same document.
 

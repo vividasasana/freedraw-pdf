@@ -1,9 +1,0 @@
-{
-  "id": "freedraw-pdf",
-  "name": "Freedraw PDF",
-  "version": "0.13.2",
-  "minAppVersion": "1.12.0",
-  "description": "Freehand PDF annotation workspace with vault-backed sidecar saves.",
-  "author": "vida sana",
-  "isDesktopOnly": false
-}

@@ -20,6 +20,7 @@ const files = [...new Set(git(staged ? ["ls-files", "--cached", "-z"] : ["ls-fil
 let count = 0;
 for (const file of files) {
   if (!staged && !fs.existsSync(path.join(root, file))) continue;
+  assert.ok(!/^v[012]\//.test(file), `Local snapshot must not be published: ${file}`);
   assert.ok(!privatePath.test(file), `Private/generated path in publication: ${file}`);
   assert.ok(!binaryOrPrivate.test(file) || imageException.test(file), `Unexpected private/binary file: ${file}`);
   assert.ok(!/(?:^|\/)main\.js$/.test(file), `Generated bundle must remain a release asset: ${file}`);
@@ -31,22 +32,13 @@ for (const file of files) {
   }
   count++;
 }
-for (const version of ["v0", "v1", "v2"]) {
-  const manifest = json(`${version}/manifest.json`);
-  const pkg = json(`${version}/package.json`);
-  const lock = json(`${version}/package-lock.json`);
-  assert.equal(pkg.version, manifest.version, `${version}: manifest/package mismatch`);
-  assert.equal(lock.version, pkg.version, `${version}: lockfile mismatch`);
-  assert.equal(json(`${version}/versions.json`)[manifest.version], manifest.minAppVersion);
-  assert.equal(manifest.id, "freedraw-pdf");
-}
-for (const file of ["manifest.json", "versions.json"]) assert.deepEqual(json(file), json(`v2/${file}`), `Root ${file} must mirror v2`);
-const active = json("v2/package.json");
-const rootPackage = json("package.json");
-assert.equal(rootPackage.private, true);
-assert.equal(rootPackage.version, active.version);
-assert.deepEqual(rootPackage.dependencies, active.dependencies);
-assert.deepEqual(rootPackage.devDependencies, active.devDependencies);
+const manifest = json("manifest.json"), pkg = json("package.json"), lock = json("package-lock.json");
+assert.equal(pkg.version, manifest.version, "Manifest/package version mismatch");
+assert.equal(lock.version, pkg.version, "Lockfile version mismatch");
+assert.equal(lock.packages[""].version, pkg.version);
+assert.equal(manifest.id, "freedraw-pdf");
+assert.equal(json("versions.json")[manifest.version], manifest.minAppVersion);
+assert.ok(/^0\.13\.\d+$/.test(manifest.version), "Use the plugin 0.13.x version series");
 const tagIndex = process.argv.indexOf("--tag");
-if (tagIndex >= 0) assert.equal(process.argv[tagIndex + 1], active.version, "Tag must match active v2 version");
-console.log(`Repository privacy/layout passed: ${count} ${staged ? "staged" : "candidate"} text files; v0/v1/v2 metadata consistent.`);
+if (tagIndex >= 0) assert.equal(process.argv[tagIndex + 1], manifest.version, "Tag must match plugin version");
+console.log(`Repository privacy/layout passed: ${count} ${staged ? "staged" : "candidate"} text files; one plugin at the root.`);

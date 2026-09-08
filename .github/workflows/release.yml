@@ -22,31 +22,31 @@ jobs:
         run: npm ci
       - name: Validate tag and version layout
         run: node scripts/check-repository.js --tag "$GITHUB_REF_NAME"
-      - name: Check v2
+      - name: Check plugin
         run: npm run check
-      - name: Build v2
+      - name: Build plugin
         run: npm run build
       - name: Verify deployment privacy
         shell: pwsh
         run: ./scripts/check-deployment.ps1
       - name: Recheck generated asset privacy
-        run: npm --prefix v2 run check:privacy
-      - name: Package v2
+        run: npm run check:privacy
+      - name: Package plugin
         run: |
-          mkdir -p v2/dist
-          zip -j "v2/dist/freedraw-pdf-${GITHUB_REF_NAME}.zip" v2/manifest.json v2/main.js v2/styles.css
+          mkdir -p dist
+          zip -j "dist/freedraw-pdf-${GITHUB_REF_NAME}.zip" manifest.json main.js styles.css
       - name: Attest release artifacts
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: |
-            v2/manifest.json
-            v2/main.js
-            v2/styles.css
-            v2/dist/freedraw-pdf-*.zip
+            manifest.json
+            main.js
+            styles.css
+            dist/freedraw-pdf-*.zip
       - name: Publish version notes and assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" --verify-tag --title "Freedraw PDF $GITHUB_REF_NAME — v2" \
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "Freedraw PDF $GITHUB_REF_NAME" \
             --notes-file "docs/releases/${GITHUB_REF_NAME}.md" \
-            v2/manifest.json v2/main.js v2/styles.css "v2/dist/freedraw-pdf-${GITHUB_REF_NAME}.zip"
+            manifest.json main.js styles.css "dist/freedraw-pdf-${GITHUB_REF_NAME}.zip"

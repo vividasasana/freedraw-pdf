@@ -3,6 +3,7 @@ const { spawnSync } = require("child_process");
 
 const projectRoot = path.resolve(__dirname, "..");
 const checks = [
+	"check-repository.js",
 	"check-module-integrity.js",
 	"check-mixed-document.js",
 	"check-ink-engine.js",
@@ -17,7 +18,13 @@ const checks = [
 	"check-text-formatting.js",
 	"check-interaction-polish.js",
 	"check-zoom-selection-stability.js",
-	"check-release-hygiene.js"
+	"check-release-hygiene.js",
+	"check-v2-reliability.js",
+	"check-v2-interactions.js",
+	"check-v2-rendering.js",
+	"check-v2-page-flow.js",
+	"check-v2-stroke-settings.js",
+	"check-v2-privacy.js"
 ];
 
 for (const check of checks) {

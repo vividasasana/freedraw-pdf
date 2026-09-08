@@ -10,7 +10,7 @@ const releaseFiles = ["main.js", "manifest.json", "styles.css"];
 function assertInsideProject(targetPath) {
 	const relativePath = path.relative(projectRoot, path.resolve(targetPath));
 	if (relativePath === "" || relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
-		throw new Error(`Refusing to write outside the v2 project: ${targetPath}`);
+		throw new Error(`Refusing to write outside the plugin project: ${targetPath}`);
 	}
 }
 
@@ -46,14 +46,14 @@ function buildSamplePdf() {
 	const pageOneStream = [
 		"0.93 0.96 1 rg 48 90 516 630 re f",
 		"0.35 0.44 0.62 RG 1 w 72 650 m 540 650 l S",
-		"BT /F1 24 Tf 72 710 Td (Freedraw PDF v2 test - page 1) Tj ET",
+		"BT /F1 24 Tf 72 710 Td (Freedraw PDF test - page 1) Tj ET",
 		"BT /F1 12 Tf 72 620 Td (Use this page for pen, pressure, eraser, text, image and selection tests.) Tj ET",
 		"BT /F1 12 Tf 72 592 Td (Pinch zoom and finger pan repeatedly, then confirm the page stays anchored.) Tj ET"
 	].join("\n");
 	const pageTwoStream = [
 		"0.96 0.94 1 rg 48 90 516 630 re f",
 		"0.47 0.33 0.62 RG 1 w 72 650 m 540 650 l S",
-		"BT /F1 24 Tf 72 710 Td (Freedraw PDF v2 test - page 2) Tj ET",
+		"BT /F1 24 Tf 72 710 Td (Freedraw PDF test - page 2) Tj ET",
 		"BT /F1 12 Tf 72 620 Td (Use Pages and template menus, then move between both PDF pages.) Tj ET",
 		"BT /F1 12 Tf 72 592 Td (Check that popovers close when another menu opens.) Tj ET"
 	].join("\n");
@@ -67,7 +67,7 @@ function buildSamplePdf() {
 		`<< /Length ${Buffer.byteLength(pageTwoStream, "ascii")} >>\nstream\n${pageTwoStream}\nendstream`
 	];
 
-	let pdf = "%PDF-1.4\n% Freedraw PDF v2 test document\n";
+	let pdf = "%PDF-1.4\n% Freedraw PDF test document\n";
 	const offsets = [0];
 	objects.forEach((object, index) => {
 		offsets.push(Buffer.byteLength(pdf, "ascii"));
@@ -97,12 +97,12 @@ function verifyVault() {
 	}
 	const installedManifest = JSON.parse(fs.readFileSync(path.join(pluginRoot, "manifest.json"), "utf8"));
 	if (installedManifest.id !== manifest.id || installedManifest.version !== manifest.version) {
-		throw new Error("Installed test-vault manifest does not match the v2 release manifest.");
+		throw new Error("Installed test-vault manifest does not match the plugin release manifest.");
 	}
 	const installedMain = fs.readFileSync(path.join(pluginRoot, "main.js"));
 	const releaseMain = fs.readFileSync(path.join(projectRoot, "main.js"));
 	if (!installedMain.equals(releaseMain)) {
-		throw new Error("Installed test-vault main.js does not match the v2 build.");
+		throw new Error("Installed test-vault main.js does not match the plugin build.");
 	}
 	const samplePdf = fs.readFileSync(path.join(vaultRoot, "Test PDF.pdf"));
 	const samplePdfText = samplePdf.toString("ascii");
@@ -138,7 +138,7 @@ writeText(path.join(vaultRoot, ".obsidian", "app.json"), "{}\n", { preserveExist
 syncCommunityPlugins(path.join(vaultRoot, ".obsidian", "community-plugins.json"));
 writeText(
 	path.join(vaultRoot, "Start Here.md"),
-	`# Freedraw PDF v2 test vault
+	`# Freedraw PDF test vault
 
 This vault contains the current **v2** build. The original project outside \`v2\` is not used by this vault.
 

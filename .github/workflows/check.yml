@@ -20,4 +20,4 @@ jobs:
         shell: pwsh
         run: ./scripts/check-deployment.ps1
       - run: npm run build
-      - run: npm --prefix v2 run check:privacy
+      - run: npm run check:privacy
