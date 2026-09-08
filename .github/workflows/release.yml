@@ -1,81 +1,52 @@
 name: Release
-
 on:
   push:
     tags:
-      - "*.*.*"
-
+      - '*.*.*'
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
-
+  contents: read
 jobs:
   release:
     runs-on: ubuntu-latest
-
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
-
-      - name: Install
+      - name: Install locked dependencies
         run: npm ci
-
-      - name: Check
+      - name: Validate tag and version layout
+        run: node scripts/check-repository.js --tag "$GITHUB_REF_NAME"
+      - name: Check v2
         run: npm run check
-
-      - name: Build
+      - name: Build v2
         run: npm run build
-
-      - name: Package
-        shell: bash
+      - name: Verify deployment privacy
+        shell: pwsh
+        run: ./scripts/check-deployment.ps1
+      - name: Recheck generated asset privacy
+        run: npm --prefix v2 run check:privacy
+      - name: Package v2
         run: |
-          mkdir -p dist
-          zip -j "dist/freedraw-pdf-${GITHUB_REF_NAME}.zip" manifest.json main.js styles.css
-
+          mkdir -p v2/dist
+          zip -j "v2/dist/freedraw-pdf-${GITHUB_REF_NAME}.zip" v2/manifest.json v2/main.js v2/styles.css
       - name: Attest release artifacts
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: |
-            manifest.json
-            main.js
-            styles.css
-            dist/freedraw-pdf-*.zip
-
-      - name: Verify manifest version matches tag
-        shell: bash
+            v2/manifest.json
+            v2/main.js
+            v2/styles.css
+            v2/dist/freedraw-pdf-*.zip
+      - name: Publish version notes and assets
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          VERSION="$(node -p "require('./manifest.json').version")"
-          if [ "$VERSION" != "${GITHUB_REF_NAME}" ]; then
-            echo "manifest.json version ($VERSION) must match tag (${GITHUB_REF_NAME})"
-            exit 1
-          fi
-
-      - name: Publish release
-        uses: softprops/action-gh-release@v2
-        with:
-          body: |
-            freedraw-pdf ${{ github.ref_name }}
-
-            - Built from the tagged source by GitHub Actions.
-            - Includes manifest.json, main.js, and styles.css for Obsidian manual installation.
-            - Includes a ready-to-install ZIP containing the same release files.
-            - Release artifacts are covered by GitHub artifact attestations.
-            - Adds a mixed-page lifecycle with restore and permanent-delete controls for removed pages.
-            - Connects mixed-page navigation and thumbnails to Obsidian's native PDF controls.
-            - Improves iPad input admission, finger panning, text keyboard avoidance, and mobile toolbar sizing.
-            - Stores touch-erased survivor geometry directly, without replaying eraser masks or recalculating intact strokes.
-            - Expands pen, highlighter, and eraser width ranges while keeping mobile controls consistently sized.
-
-            Known limitation: rapid consecutive drawing with primary touch in Obsidian on iPad can still miss input while a previous page rebuild is active. This remains under investigation.
-          files: |
-            manifest.json
-            main.js
-            styles.css
-            dist/freedraw-pdf-${{ github.ref_name }}.zip
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "Freedraw PDF $GITHUB_REF_NAME — v2" \
+            --notes-file "docs/releases/${GITHUB_REF_NAME}.md" \
+            v2/manifest.json v2/main.js v2/styles.css "v2/dist/freedraw-pdf-${GITHUB_REF_NAME}.zip"

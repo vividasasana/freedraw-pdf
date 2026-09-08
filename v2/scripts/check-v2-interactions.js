@@ -1,0 +1,36 @@
+const fs=require('fs'),path=require('path'),vm=require('vm'),ts=require('typescript'),assert=require('assert/strict');
+const root=path.resolve(__dirname,'..');
+function load(relative,overrides={}) {
+ const module={exports:{}};
+ const code=ts.transpileModule(fs.readFileSync(path.join(root,relative),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText;
+ vm.runInNewContext(code,{module,exports:module.exports,require:n=>overrides[n]??require(n),console,performance,Map,Set},{filename:relative});return module.exports;
+}
+const input=load('src/pointer/pointerInput.ts',{'../utils/deviceUtils':{getInputMethod:e=>e.pointerType,isTabletWebKitTouchDevice:()=>true},'../utils/general':{clamp:(v,a,b)=>Math.min(b,Math.max(a,v))},'../tools/toolState':{isShapeTool:()=>false}});
+const finger={pointerType:'touch',width:3,height:3,pressure:0.3,isPrimary:true};
+assert.equal(input.shouldPanInkPointerEvent(finger,'pen','pen-mouse-only'),true,'Small Android finger contacts must pan despite pressure');
+assert.equal(input.shouldIgnoreInkPointerEvent(finger,'pen','pen-mouse-only'),true);
+assert.equal(input.isStylusLikePointerEvent({...finger,pointerType:'pen'}),true);
+assert.equal(input.isStylusLikePointerEvent({...finger,touchType:'stylus'}),true);
+const keys=load('src/interaction/toolShortcuts.ts');
+const key={key:'1',ctrlKey:false,metaKey:false,altKey:false,shiftKey:false,repeat:false,isComposing:false};
+assert.equal(keys.resolveToolShortcut(key),'pen');
+assert.equal(keys.resolveToolShortcut({...key,key:'4'}),'select');
+for(const flag of ['ctrlKey','metaKey','altKey','shiftKey','repeat','isComposing'])assert.equal(keys.resolveToolShortcut({...key,[flag]:true}),null);
+const main=fs.readFileSync(path.join(root,'main.ts'),'utf8');
+const method=main.slice(main.indexOf('\tprivate getLivePreviewPredictionStrength():'),main.indexOf('\n\tprivate drawStroke(',main.indexOf('\tprivate getLivePreviewPredictionStrength():')));
+const context={};vm.runInNewContext(ts.transpileModule('class Session {'+method+'}\nglobalThis.Session=Session;',{compilerOptions:{target:ts.ScriptTarget.ES2020}}).outputText,context);
+const session=new context.Session();session.plugin={getLivePreviewMode:()=> 'balanced'};
+assert.equal(session.getLivePreviewPredictionStrength(),0,'Default live ink must not predict geometry that disappears at pen-up');
+const ink=load('src/ink/inkEngine.ts');
+const points=Array.from({length:100},(_,i)=>({x:0.1+i*0.006,y:0.4+Math.sin(i*0.08)*0.02+(i%2?0.0008:-0.0008),pressure:0.5,t:i*8}));
+const live=ink.getSmoothInkStrokeOutline(points,1000,1400,4,true,true,{predictionStrength:session.getLivePreviewPredictionStrength()});
+const saved=ink.getSmoothInkStrokeOutline(points,1000,1400,4,true,false);
+assert.deepEqual(live,saved,'Same samples must render identically live and saved');
+const cut=ink.getSmoothInkStrokeOutline(points,1000,1400,4,true,false,{startCap:true,endCap:true});
+assert.deepEqual(cut,saved,'Rounded cut caps must match the natural untapered endpoints');
+ink.setInkRenderSettings({taperStart:20,taperEnd:35});
+const zoomOne=ink.getSmoothInkStrokeOutline(points,1000,1400,4,true,false);
+const zoomTwo=ink.getSmoothInkStrokeOutline(points,2000,2800,8,true,false);
+assert.equal(zoomOne.length,zoomTwo.length,'Tapered stroke geometry must be independent of zoom');
+zoomOne.forEach((point,i)=>point.forEach((value,j)=>assert.ok(Math.abs(value-zoomTwo[i][j]/2)<1e-8)));
+console.log('V2 interactions passed: finger/pen distinction, modifier-safe tool keys, stable live ink, clean eraser caps.');

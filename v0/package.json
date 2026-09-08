@@ -1,0 +1,37 @@
+{
+  "name": "freedraw-pdf",
+  "version": "0.12.9",
+  "description": "Freehand PDF annotation plugin",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "node esbuild.config.mjs production",
+    "check:mixed": "node scripts/check-mixed-document.js",
+    "check:ink": "node scripts/check-ink-engine.js",
+    "check:input": "node scripts/check-input-policy.js",
+    "check:eraser": "node scripts/check-eraser-migration.js",
+    "check:render": "node scripts/check-render-concurrency.js",
+    "check:templates": "node scripts/check-template-consistency.js",
+    "check:toolbar": "node scripts/check-toolbar-usability.js",
+    "check:text": "node scripts/check-text-formatting.js",
+    "check:stability": "node scripts/check-zoom-selection-stability.js",
+    "check:privacy": "node scripts/check-release-hygiene.js",
+    "check": "node scripts/run-checks.js",
+    "package": "node esbuild.config.mjs production && npm run check && powershell -ExecutionPolicy Bypass -File scripts/package-plugin.ps1",
+    "deploy:test": "node esbuild.config.mjs production && npm run check && powershell -ExecutionPolicy Bypass -File scripts/deploy-test.ps1",
+    "copy:test": "powershell -ExecutionPolicy Bypass -File scripts/deploy-test.ps1",
+    "release:test": "node esbuild.config.mjs production && npm run check && powershell -ExecutionPolicy Bypass -File scripts/deploy-test.ps1 && powershell -ExecutionPolicy Bypass -File scripts/package-plugin.ps1"
+  },
+  "keywords": [],
+  "author": "vida sana",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^18.19.130",
+    "esbuild": "^0.28.1",
+    "obsidian": "^1.12.3",
+    "typescript": "^6.0.2"
+  },
+  "dependencies": {
+    "perfect-freehand": "^1.2.3"
+  }
+}

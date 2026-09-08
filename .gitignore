@@ -3,6 +3,9 @@ obsidian/
 backups/
 .agents/
 .codex/
+.analysis/
+output/
+tmp/
 dist/
 pdf drawing test/
 main.js
@@ -18,5 +21,17 @@ main.js
 *.webp
 *.log
 .env
+.env.*
+!.env.example
+.npmrc
+*.key
+*.pem
+*.p12
+*.pfx
+context.md
+.idea/
+.vscode/
 .DS_Store
 Thumbs.db
+
+test-vault/

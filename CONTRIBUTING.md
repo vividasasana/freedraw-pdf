@@ -18,14 +18,16 @@ Do not include private PDFs, vault data, credentials, or other sensitive content
 
 Requirements:
 
-- Node.js 18 or later.
+- Node.js 24 (matching CI).
 - npm.
 
 ```bash
-npm install
+npm ci
 npm run check
 npm run build
 ```
+
+Work in `v2/`; `v0/` and `v1/` are archived implementations. Root commands delegate to v2, and root discovery metadata must match v2.
 
 Use `npm run dev` for watch mode. Test PDF interaction changes with mouse and touch or stylus input when applicable.
 

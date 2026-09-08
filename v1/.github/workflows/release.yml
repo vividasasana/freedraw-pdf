@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*.*.*"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Check
+        run: npm run check
+
+      - name: Build
+        run: npm run build
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          zip -j "dist/freedraw-pdf-${GITHUB_REF_NAME}.zip" manifest.json main.js styles.css
+
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            manifest.json
+            main.js
+            styles.css
+            dist/freedraw-pdf-*.zip
+
+      - name: Verify manifest version matches tag
+        shell: bash
+        run: |
+          VERSION="$(node -p "require('./manifest.json').version")"
+          if [ "$VERSION" != "${GITHUB_REF_NAME}" ]; then
+            echo "manifest.json version ($VERSION) must match tag (${GITHUB_REF_NAME})"
+            exit 1
+          fi
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          body: |
+            freedraw-pdf ${{ github.ref_name }}
+
+            - Built from the tagged source by GitHub Actions.
+            - Includes manifest.json, main.js, and styles.css for Obsidian manual installation.
+            - Includes a ready-to-install ZIP containing the same release files.
+            - Release artifacts are covered by GitHub artifact attestations.
+            - Adds a mixed-page lifecycle with restore and permanent-delete controls for removed pages.
+            - Connects mixed-page navigation and thumbnails to Obsidian's native PDF controls.
+            - Improves iPad input admission, finger panning, text keyboard avoidance, and mobile toolbar sizing.
+            - Stores touch-erased survivor geometry directly, without replaying eraser masks or recalculating intact strokes.
+            - Expands pen, highlighter, and eraser width ranges while keeping mobile controls consistently sized.
+
+            Known limitation: rapid consecutive drawing with primary touch in Obsidian on iPad can still miss input while a previous page rebuild is active. This remains under investigation.
+          files: |
+            manifest.json
+            main.js
+            styles.css
+            dist/freedraw-pdf-${{ github.ref_name }}.zip

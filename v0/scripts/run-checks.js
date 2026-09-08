@@ -1,0 +1,29 @@
+const path = require("path");
+const { spawnSync } = require("child_process");
+
+const projectRoot = path.resolve(__dirname, "..");
+const checks = [
+	"check-mixed-document.js",
+	"check-ink-engine.js",
+	"check-input-policy.js",
+	"check-eraser-migration.js",
+	"check-render-concurrency.js",
+	"check-template-consistency.js",
+	"check-toolbar-usability.js",
+	"check-text-formatting.js",
+	"check-zoom-selection-stability.js",
+	"check-release-hygiene.js"
+];
+
+for (const check of checks) {
+	const result = spawnSync(process.execPath, [path.join(__dirname, check)], {
+		cwd: projectRoot,
+		stdio: "inherit"
+	});
+	if (result.error) {
+		throw result.error;
+	}
+	if (result.status !== 0) {
+		process.exit(result.status ?? 1);
+	}
+}
