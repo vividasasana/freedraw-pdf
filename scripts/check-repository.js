@@ -14,13 +14,13 @@ const patterns = [
   ["personal filesystem path", /(?:[A-Z]:[\\/]Users[\\/][^\\/\s]+|\/(?:Users|home)\/[^/\s]+\/)/i]
 ];
 const privatePath = /(?:^|\/)(?:\.analysis|\.agents|\.codex|\.obsidian|obsidian|test-vault|node_modules|backups|tmp|output|dist)(?:\/|$)|(?:^|\/)(?:context\.md|\.npmrc|\.env(?:\..*)?)$/i;
-const imageException = /^(?:v[012]\/)?docs\/images\/freedraw-pdf-annotated-embed-demo\.png$/;
+const imageException = /^docs\/images\/freedraw-pdf-annotated-embed-demo\.png$/;
 const binaryOrPrivate = /\.(?:pdf|zip|png|jpe?g|gif|webp|bak|log|key|pem|p12|pfx|annot\.json)$/i;
 const files = [...new Set(git(staged ? ["ls-files", "--cached", "-z"] : ["ls-files", "--cached", "--others", "--exclude-standard", "-z"]).toString("utf8").split("\0").filter(Boolean))];
 let count = 0;
 for (const file of files) {
   if (!staged && !fs.existsSync(path.join(root, file))) continue;
-  assert.ok(!/^v[012]\//.test(file), `Local snapshot must not be published: ${file}`);
+  assert.ok(!/^v\d+\//.test(file), `Local snapshot must not be published: ${file}`);
   assert.ok(!privatePath.test(file), `Private/generated path in publication: ${file}`);
   assert.ok(!binaryOrPrivate.test(file) || imageException.test(file), `Unexpected private/binary file: ${file}`);
   assert.ok(!/(?:^|\/)main\.js$/.test(file), `Generated bundle must remain a release asset: ${file}`);

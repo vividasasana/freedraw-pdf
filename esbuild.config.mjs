@@ -16,6 +16,7 @@ const context = await esbuild.context({
 	logLevel: "info",
 	outfile: join(projectDir, "main.js"),
 	platform: "browser",
+	minify: prod,
 	banner: {
 		js: `if (!Promise.withResolvers) {
   Promise.withResolvers = function () {

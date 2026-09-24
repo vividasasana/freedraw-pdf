@@ -1,4 +1,5 @@
 const path = require("path");
+const { existsSync } = require("fs");
 const { spawnSync } = require("child_process");
 
 const projectRoot = path.resolve(__dirname, "..");
@@ -22,10 +23,12 @@ const checks = [
 	"check-v2-reliability.js",
 	"check-v2-interactions.js",
 	"check-v2-rendering.js",
+	"check-runtime-efficiency.js",
 	"check-v2-page-flow.js",
 	"check-v2-stroke-settings.js",
 	"check-v2-privacy.js"
 ];
+if (existsSync(path.join(projectRoot, "main.js"))) checks.push("check-built-plugin.js");
 
 for (const check of checks) {
 	const result = spawnSync(process.execPath, [path.join(__dirname, check)], {

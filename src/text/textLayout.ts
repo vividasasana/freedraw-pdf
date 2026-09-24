@@ -154,15 +154,6 @@ export function getTextBlockTop(
 	return boxTop + Math.max(0, (Math.max(boxHeight, blockHeight) - blockHeight) / 2);
 }
 
-export function getVerticallyCenteredTextTop(
-	boxTop: number,
-	boxHeight: number,
-	fontSize: number,
-	lineCount: number
-): number {
-	return getTextBlockTop(boxTop, boxHeight, fontSize, lineCount, "middle");
-}
-
 export function measureAutoFitTextBox(
 	context: CanvasRenderingContext2D,
 	text: string,
@@ -232,40 +223,6 @@ export function getInlineTextEditorLayout(
 export function resizeInlineTextEditor(editor: HTMLTextAreaElement, maxHeight: number): void {
 	editor.setCssStyles({ height: "auto" });
 	editor.setCssStyles({ height: `${Math.min(Math.max(40, editor.scrollHeight + 2), Math.max(80, maxHeight))}px` });
-}
-
-export function getHorizontalTextCaretIndex(
-	text: string,
-	index: number,
-	direction: "left" | "right",
-	byWord = false
-): number {
-	const safeIndex = clamp(Math.round(index), 0, text.length);
-	if (byWord) {
-		let cursor = safeIndex;
-		if (direction === "left") {
-			while (cursor > 0 && /\s/.test(text[cursor - 1])) {
-				cursor -= 1;
-			}
-			while (cursor > 0 && !/\s/.test(text[cursor - 1])) {
-				cursor -= 1;
-			}
-			return cursor;
-		}
-		while (cursor < text.length && !/\s/.test(text[cursor])) {
-			cursor += 1;
-		}
-		while (cursor < text.length && /\s/.test(text[cursor])) {
-			cursor += 1;
-		}
-		return cursor;
-	}
-	if (direction === "left") {
-		const previousCharacter = Array.from(text.slice(0, safeIndex)).pop();
-		return previousCharacter ? safeIndex - previousCharacter.length : 0;
-	}
-	const nextCharacter = Array.from(text.slice(safeIndex))[0];
-	return nextCharacter ? safeIndex + nextCharacter.length : text.length;
 }
 
 export function getCanvasTextLines(

@@ -26,8 +26,6 @@ const stylesCss = read("styles.css");
 const mixedExportTs = read("src/export/mixedDocumentExport.ts");
 const mainTs = read("main.ts");
 const packageJson = JSON.parse(read("package.json"));
-const builtMainPath = path.join(projectRoot, "main.js");
-const builtMain = fs.existsSync(builtMainPath) ? fs.readFileSync(builtMainPath, "utf8") : "";
 
 assertContains("src/notebook/pageModel.ts", pageModelTs, "export function getNotebookPageRenderDimensions", "page render dimensions must be centralized");
 assertContains("src/notebook/pageModel.ts", pageModelTs, "a4ReferenceWidth * dimensions.width", "render dimensions must preserve page-size width ratios from an A4 reference");
@@ -52,9 +50,7 @@ assertContains("src/export/mixedDocumentExport.ts", mixedExportTs, "hasEditableN
 
 assertContains("package.json", JSON.stringify(packageJson.scripts), "check:templates", "package scripts must expose this verifier");
 
-if (builtMain) {
-	assertContains("main.js", builtMain, "getNotebookPageRenderDimensions", "built bundle must include shared page render dimensions");
-	assertContains("main.js", builtMain, "BLANK_PDF_EXPORT_WIDTH_PX", "built bundle must include blank PDF export sizing");
-}
+// The compiled PDF creation path is exercised by check-built-plugin.js;
+// local function/constant names are intentionally minified in production.
 
 console.log("Template consistency verifier passed.");

@@ -1,5 +1,4 @@
 import type { TFile, WorkspaceLeaf } from "obsidian";
-import type { RenderableAnnotation as OrderedRenderableAnnotation } from "./annotation/renderOrder";
 
 export type ShapeTool = "rectangle" | "ellipse" | "line";
 export type AnnotationTool = "select" | "region" | "pen" | "highlighter" | "eraser" | "text" | ShapeTool;
@@ -196,14 +195,6 @@ export interface PdfPageTemplate {
 	pageSize: NotebookPageSize;
 }
 
-export interface NotebookDocument {
-	version: 1;
-	title: string;
-	createdAt: string;
-	updatedAt: string;
-	pages: NotebookPage[];
-}
-
 export interface RemovedNotebookPage {
 	page: NotebookPage;
 	originalIndex: number;
@@ -215,11 +206,6 @@ export interface RemovedNotebookPage {
 		shapes: ShapeAnnotation[];
 		imageItems: ImageAnnotation[];
 	};
-}
-
-export interface NotebookHistoryState {
-	document: NotebookDocument;
-	activePageId: string | null;
 }
 
 export interface MixedPageEntry {
@@ -250,8 +236,6 @@ export interface AnnotatedMarkdownEmbedInstance {
 	el: HTMLElement;
 	render: (forceRefresh?: boolean) => void;
 }
-
-export type RenderableAnnotation = OrderedRenderableAnnotation<StrokeAnnotation, TextAnnotation, ShapeAnnotation>;
 
 export interface RegionReference {
 	filePath: string;

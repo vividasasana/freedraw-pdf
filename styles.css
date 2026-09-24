@@ -1418,7 +1418,7 @@
 
 .pdf-native-annotator-tool-preview {
 	position: absolute;
-	z-index: 200;
+	z-index: 9993;
 	pointer-events: none;
 	border-radius: 999px;
 	transform: translateZ(0);
@@ -1431,16 +1431,6 @@
 .pdf-native-annotator-tool-preview.is-hidden {
 	opacity: 0;
 	transform: scale(0.8);
-}
-
-.pdf-native-annotator-tool-preview.is-pen {
-	border: 1.5px solid rgba(255, 107, 87, 0.9);
-	background: rgba(255, 107, 87, 0.12);
-}
-
-.pdf-native-annotator-tool-preview.is-highlighter {
-	border: 1.5px solid rgba(255, 203, 71, 0.88);
-	background: rgba(255, 203, 71, 0.2);
 }
 
 .pdf-native-annotator-tool-preview.is-eraser {

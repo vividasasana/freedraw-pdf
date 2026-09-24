@@ -40,7 +40,7 @@ import {
 	restoreSyntheticPageFromTrash
 } from "./src/notebook/pageLifecycle";
 import { drawTemplatePageBackground } from "./src/notebook/templateCanvas";
-import { getCoalescedPointerEvents, isInkDrawingTool, isWebKitStylusTouch, resolvePointerPressure, shouldCaptureInkPointerEvent, shouldIgnoreInkPointerEvent, shouldPanInkPointerEvent } from "./src/pointer/pointerInput";
+import { getCoalescedPointerEvents, isInkDrawingTool, isWebKitStylusTouch, resolvePointerPressure, shouldCaptureAnnotationPointerEvent, shouldIgnoreInkPointerEvent, shouldPanAnnotationPointerEvent } from "./src/pointer/pointerInput";
 import { PDFAnnotatorSettingsController } from "./src/settings/settingsController";
 import { PDFAnnotatorSettingTab } from "./src/settings/settingTab";
 import { createNativeMixedWorkingPdf, exportAnnotatedMixedDocumentPdf } from "./src/export/mixedDocumentExport";
@@ -540,7 +540,12 @@ class NativePdfAnnotatorSession {
 	private pendingRedrawPages = new Set<number>();
 	private pendingInteractionRedrawPages = new Set<number>();
 	private pendingCommittedRedrawPages = new Set<number>();
-	private strokePathCache = new Map<string, { signature: string; outline: InkStrokeOutline }>();
+	private strokePathCache = new WeakMap<StrokeAnnotation, {
+		width: number; height: number; baseWidth: number; usePressure: boolean;
+		points: StrokeAnnotation["points"]; pointCount: number;
+		inkSettings: StrokeAnnotation["inkSettings"]; cutStart?: boolean; cutEnd?: boolean;
+		outline: InkStrokeOutline;
+	}>();
 	private pageRenderSlots = new Map<number, PageRenderSlotPool>();
 	private pageRenderJobs = new Map<number, PageRenderJob>();
 	private pageRenderVersions = new Map<number, number>();
@@ -5812,30 +5817,26 @@ class NativePdfAnnotatorSession {
 		return Math.max(this.realPdfPageCount, 0) + this.getAppendedPages().length;
 	}
 
-	private getAnnotationCountForPage(pageNumber: number, document = this.annotationDocument): number {
-		return this.getAnnotationBreakdownForPage(pageNumber, document).total;
+	private getPageAnnotationCounts(document = this.annotationDocument): Map<number, number> {
+		const counts = new Map<number, number>();
+		for (const items of [document?.strokes, document?.textItems, document?.shapes, document?.imageItems]) {
+			for (const { page } of items ?? []) {
+				counts.set(page, (counts.get(page) ?? 0) + 1);
+			}
+		}
+		return counts;
 	}
 
-	private getAnnotationBreakdownForPage(pageNumber: number, document = this.annotationDocument): { strokes: number; text: number; shapes: number; images: number; total: number } {
-		const strokes = document?.strokes.filter((stroke) => stroke.page === pageNumber).length ?? 0;
-		const text = document?.textItems.filter((item) => item.page === pageNumber).length ?? 0;
-		const shapes = document?.shapes.filter((shape) => shape.page === pageNumber).length ?? 0;
-		const images = document?.imageItems?.filter((image) => image.page === pageNumber).length ?? 0;
-		return {
-			strokes,
-			text,
-			shapes,
-			images,
-			total: strokes + text + shapes + images
-		};
-	}
 	private getMixedPageEntries(document = this.annotationDocument): MixedPageEntry[] {
 		const entries: MixedPageEntry[] = [];
+		const annotationCounts = this.getPageAnnotationCounts(document);
+		const pageTemplates = new Map(document && hasEditableNativePageTemplates(document, this.realPdfPageCount)
+			? (document.pdfPageTemplates ?? []).map(template => [template.page, template] as const) : []);
 		const addedEntriesByAnchor = new Map<number, MixedPageEntry[]>();
 		const appendedPages = document?.appendedPages ?? [];
 		appendedPages.forEach((page, index) => {
 			const pageNumber = this.realPdfPageCount + index + 1;
-			const annotationCount = this.getAnnotationCountForPage(pageNumber, document);
+			const annotationCount = annotationCounts.get(pageNumber) ?? 0;
 			const insertAfter = this.getSyntheticPageInsertAfterPdfPage(page);
 			const group = addedEntriesByAnchor.get(insertAfter) ?? [];
 			group.push({
@@ -5857,10 +5858,8 @@ class NativePdfAnnotatorSession {
 				entries.push(...(addedEntriesByAnchor.get(pageNumber) ?? []));
 				continue;
 			}
-			const annotationCount = this.getAnnotationCountForPage(pageNumber, document);
-			const pageTemplate = document && hasEditableNativePageTemplates(document, this.realPdfPageCount)
-				? (document.pdfPageTemplates ?? []).find((template) => template.page === pageNumber) ?? null
-				: null;
+			const annotationCount = annotationCounts.get(pageNumber) ?? 0;
+			const pageTemplate = pageTemplates.get(pageNumber);
 			entries.push({
 				pageNumber,
 				label: `Page ${pageNumber}`,
@@ -5883,6 +5882,7 @@ class NativePdfAnnotatorSession {
 			return [];
 		}
 		const permanentPdfPages = new Set(document.permanentlyDeletedPdfPages ?? []);
+		const annotationCounts = this.getPageAnnotationCounts(document);
 		const hiddenPdfEntries = (document.deletedPdfPages ?? [])
 			.filter((pageNumber) => pageNumber >= 1 && pageNumber <= this.realPdfPageCount)
 			.filter((pageNumber) => !permanentPdfPages.has(pageNumber))
@@ -5891,7 +5891,7 @@ class NativePdfAnnotatorSession {
 				label: `Page ${pageNumber}`,
 				detail: `Removed PDF page - annotations preserved`,
 				isAdded: false,
-				annotationCount: this.getAnnotationCountForPage(pageNumber, document),
+				annotationCount: annotationCounts.get(pageNumber) ?? 0,
 				isRemoved: true,
 				removedKind: "pdf"
 			}));
@@ -9040,11 +9040,12 @@ class NativePdfAnnotatorSession {
 		}
 		if (
 			this.fingerPanPointerId === event.pointerId ||
-			shouldPanInkPointerEvent(event, this.currentTool, this.getInkInputPolicy())
+			shouldPanAnnotationPointerEvent(event, this.currentTool, this.getInkInputPolicy())
 		) {
 			this.hideToolPreview();
 			return;
 		}
+		this.previewState.recordPointer(event.clientX, event.clientY);
 		if (this.currentTool === "eraser") {
 			this.updateToolPreview(event.clientX, event.clientY, this.erasingSession);
 		}
@@ -9126,7 +9127,7 @@ class NativePdfAnnotatorSession {
 	}
 
 	private readonly handleViewPointerDown = (event: PointerEvent): void => {
-		if (shouldPanInkPointerEvent(event, this.currentTool, this.getInkInputPolicy())) {
+		if (shouldPanAnnotationPointerEvent(event, this.currentTool, this.getInkInputPolicy())) {
 			return;
 		}
 		this.handleFallbackPointerDown(event);
@@ -9154,7 +9155,7 @@ class NativePdfAnnotatorSession {
 		if (this.handleFingerPanPointerDown(event)) {
 			return;
 		}
-		if (this.handleCapturedInkPointerDown(event)) {
+		if (this.handleCapturedAnnotationPointerDown(event)) {
 			return;
 		}
 		this.handleFallbackPointerDown(event);
@@ -9179,14 +9180,7 @@ class NativePdfAnnotatorSession {
 
 	private readonly handleDocumentTouchStart = (event: TouchEvent): void => {
 		const pendingPointer = this.pendingWebKitTouchPointer;
-		const touches = Array.from(event.changedTouches) as Array<Touch & {
-			altitudeAngle?: number;
-			azimuthAngle?: number;
-			force?: number;
-			radiusX?: number;
-			radiusY?: number;
-			touchType?: string;
-		}>;
+		const touches = Array.from(event.changedTouches) as Array<Touch & { touchType?: string }>;
 		const matchingTouch = pendingPointer
 			? touches.find((touch) => Math.hypot(
 				pendingPointer.clientX - touch.clientX,
@@ -9202,22 +9196,13 @@ class NativePdfAnnotatorSession {
 			this.clearPendingWebKitTouchPointer();
 			return;
 		}
-		event.preventDefault();
-		event.stopImmediatePropagation();
-		const stylusTouch = isWebKitStylusTouch(
-			matchingTouch as Touch & {
-				altitudeAngle?: number;
-				azimuthAngle?: number;
-				force?: number;
-				radiusX?: number;
-				radiusY?: number;
-				touchType?: string;
-			}
-		);
+		const stylusTouch = isWebKitStylusTouch(matchingTouch);
 		this.clearPendingWebKitTouchPointer();
 		if (!stylusTouch) {
 			return;
 		}
+		event.preventDefault();
+		event.stopImmediatePropagation();
 		this.finishFingerPan(false);
 		const surface = this.ensureSurfaceAtClientPoint(matchingTouch.clientX, matchingTouch.clientY);
 		if (!surface) {
@@ -9232,7 +9217,7 @@ class NativePdfAnnotatorSession {
 			!this.annotationMode ||
 			this.activePdfPointerId !== null ||
 			this.fingerPanPointerId !== null ||
-			!shouldPanInkPointerEvent(event, this.currentTool, this.getInkInputPolicy())
+			!shouldPanAnnotationPointerEvent(event, this.currentTool, this.getInkInputPolicy())
 		) {
 			return false;
 		}
@@ -9400,8 +9385,8 @@ class NativePdfAnnotatorSession {
 		}
 	}
 
-	private handleCapturedInkPointerDown(event: PointerEvent): boolean {
-		if (!this.annotationMode || !shouldCaptureInkPointerEvent(event, this.currentTool, this.getInkInputPolicy())) {
+	private handleCapturedAnnotationPointerDown(event: PointerEvent): boolean {
+		if (!this.annotationMode || !shouldCaptureAnnotationPointerEvent(event, this.currentTool, this.getInkInputPolicy())) {
 			return false;
 		}
 		if (this.fingerPanPointerId !== null) {
@@ -9822,6 +9807,20 @@ class NativePdfAnnotatorSession {
 		}
 	}
 
+	private clearActivePdfInteraction(): void {
+		this.currentStroke = null;
+		this.currentShape = null;
+		this.currentLasso = null;
+		this.dragAnchor = null;
+		this.activeResizeHandle = null;
+		this.erasingSession = false;
+		this.lastEraserPoint = null;
+		this.eraserSessionPoints = [];
+		this.pointerPage = null;
+		this.dragMoved = false;
+		this.unbindPdfPointerDocumentTracking();
+	}
+
 	private forceFinishStalePdfInteraction(message: string): void {
 		this.finishFingerPan(false);
 		this.cancelFingerPanInertia();
@@ -9839,17 +9838,7 @@ class NativePdfAnnotatorSession {
 			const strokeCount = this.annotationDocument.strokes.length;
 			const pageNumber = committedStroke.page;
 			this.promoteCurrentTransientPreview(pageNumber);
-			this.currentStroke = null;
-			this.currentShape = null;
-			this.currentLasso = null;
-			this.dragAnchor = null;
-			this.activeResizeHandle = null;
-			this.erasingSession = false;
-			this.lastEraserPoint = null;
-			this.eraserSessionPoints = [];
-			this.pointerPage = null;
-			this.dragMoved = false;
-			this.unbindPdfPointerDocumentTracking();
+			this.clearActivePdfInteraction();
 			this.invalidateAnnotationPageCache();
 			this.documentRevision += 1;
 			this.isDirty = true;
@@ -9861,31 +9850,11 @@ class NativePdfAnnotatorSession {
 		}
 		if (this.currentShape && this.annotationDocument) {
 			this.annotationDocument.shapes.push(this.currentShape);
-			this.currentStroke = null;
-			this.currentShape = null;
-			this.currentLasso = null;
-			this.dragAnchor = null;
-			this.activeResizeHandle = null;
-			this.erasingSession = false;
-			this.lastEraserPoint = null;
-			this.eraserSessionPoints = [];
-			this.pointerPage = null;
-			this.dragMoved = false;
-			this.unbindPdfPointerDocumentTracking();
+			this.clearActivePdfInteraction();
 			this.markDirtyAndRedraw(message);
 			return;
 		}
-		this.currentStroke = null;
-		this.currentShape = null;
-		this.currentLasso = null;
-		this.dragAnchor = null;
-		this.activeResizeHandle = null;
-		this.erasingSession = false;
-		this.lastEraserPoint = null;
-		this.eraserSessionPoints = [];
-		this.pointerPage = null;
-		this.dragMoved = false;
-		this.unbindPdfPointerDocumentTracking();
+		this.clearActivePdfInteraction();
 		if (pageNumber) {
 			this.drawPageAnnotations(pageNumber);
 		}
@@ -9904,17 +9873,7 @@ class NativePdfAnnotatorSession {
 			const strokeCount = this.annotationDocument.strokes.length;
 			const pageNumber = committedStroke.page;
 			this.promoteCurrentTransientPreview(pageNumber);
-			this.currentStroke = null;
-			this.currentShape = null;
-			this.currentLasso = null;
-			this.dragAnchor = null;
-			this.activeResizeHandle = null;
-			this.erasingSession = false;
-			this.lastEraserPoint = null;
-			this.eraserSessionPoints = [];
-			this.pointerPage = null;
-			this.dragMoved = false;
-			this.unbindPdfPointerDocumentTracking();
+			this.clearActivePdfInteraction();
 			this.invalidateAnnotationPageCache();
 			this.documentRevision += 1;
 			this.isDirty = true;
@@ -9927,17 +9886,7 @@ class NativePdfAnnotatorSession {
 		if (this.currentShape) {
 			this.annotationDocument.shapes.push(this.currentShape);
 			const pageNumber = this.currentShape.page;
-			this.currentStroke = null;
-			this.currentShape = null;
-			this.currentLasso = null;
-			this.dragAnchor = null;
-			this.activeResizeHandle = null;
-			this.erasingSession = false;
-			this.lastEraserPoint = null;
-			this.eraserSessionPoints = [];
-			this.pointerPage = null;
-			this.dragMoved = false;
-			this.unbindPdfPointerDocumentTracking();
+			this.clearActivePdfInteraction();
 			this.invalidateAnnotationPageCache();
 			this.documentRevision += 1;
 			this.isDirty = true;
@@ -10773,7 +10722,7 @@ class NativePdfAnnotatorSession {
 		this.publishedFrames = new WeakMap();
 		this.annotationPageCache = null;
 		if (!this.annotationDocument) {
-			this.strokePathCache.clear();
+			this.strokePathCache = new WeakMap();
 		}
 	}
 
@@ -10958,7 +10907,7 @@ class NativePdfAnnotatorSession {
 			return;
 		}
 		if (this.currentStroke?.page === pageNumber) {
-			this.strokePathCache.delete(this.currentStroke.id);
+			this.strokePathCache.delete(this.currentStroke);
 			this.drawTransientPageAnnotations(pageNumber, true);
 		} else {
 			this.drawTransientPageAnnotations(pageNumber);
@@ -11141,34 +11090,6 @@ class NativePdfAnnotatorSession {
 		);
 	}
 
-	private getStrokePathSignature(
-		surface: PageSurface,
-		stroke: StrokeAnnotation,
-		baseWidth: number,
-		usePressure: boolean
-	): string {
-		let pointHash = 2166136261;
-		for (const point of stroke.points) {
-			pointHash ^= Math.round(point.x * 100000);
-			pointHash = Math.imul(pointHash, 16777619);
-			pointHash ^= Math.round(point.y * 100000);
-			pointHash = Math.imul(pointHash, 16777619);
-			pointHash ^= Math.round(point.pressure * 1000);
-			pointHash = Math.imul(pointHash, 16777619);
-		}
-		return [
-			surface.lastWidth.toFixed(1),
-			surface.lastHeight.toFixed(1),
-			baseWidth.toFixed(2),
-			usePressure ? "p" : "u",
-			stroke.cutStart ? "cs" : "ns",
-			stroke.cutEnd ? "ce" : "ne",
-			stroke.points.length,
-			JSON.stringify(stroke.inkSettings),
-			pointHash >>> 0
-		].join(":");
-	}
-
 	private getCachedStrokeOutline(
 		surface: PageSurface,
 		stroke: StrokeAnnotation,
@@ -11179,10 +11100,12 @@ class NativePdfAnnotatorSession {
 		if (predictTail || stroke.points.length < 4) {
 			return null;
 		}
-		const signature = this.getStrokePathSignature(surface, stroke, baseWidth, usePressure);
-		const key = stroke.id;
-		const cached = this.strokePathCache.get(key);
-		if (cached?.signature === signature) {
+		const cached = this.strokePathCache.get(stroke);
+		// Committed point arrays and per-stroke settings are replaced by edits, never mutated.
+		if (cached && cached.points === stroke.points && cached.pointCount === stroke.points.length &&
+			cached.width === surface.lastWidth && cached.height === surface.lastHeight &&
+			cached.baseWidth === baseWidth && cached.usePressure === usePressure &&
+			cached.inkSettings === stroke.inkSettings && cached.cutStart === stroke.cutStart && cached.cutEnd === stroke.cutEnd) {
 			return cached.outline;
 		}
 		const outline = getSmoothInkStrokeOutline(
@@ -11202,10 +11125,14 @@ class NativePdfAnnotatorSession {
 			}
 		);
 		if (!outline) {
-			this.strokePathCache.delete(key);
+			this.strokePathCache.delete(stroke);
 			return null;
 		}
-		this.strokePathCache.set(key, { signature, outline });
+		this.strokePathCache.set(stroke, {
+			width: surface.lastWidth, height: surface.lastHeight, baseWidth, usePressure,
+			points: stroke.points, pointCount: stroke.points.length, inkSettings: stroke.inkSettings,
+			cutStart: stroke.cutStart, cutEnd: stroke.cutEnd, outline
+		});
 		return outline;
 	}
 

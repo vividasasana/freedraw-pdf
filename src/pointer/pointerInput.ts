@@ -50,14 +50,28 @@ export function shouldCaptureInkPointerEvent(
 	return inputMethod === "pen" || inputMethod === "touch";
 }
 
-export function shouldPanInkPointerEvent(
+export function shouldCaptureAnnotationPointerEvent(
 	event: PointerEvent,
 	tool: AnnotationTool,
 	policy: InkInputPolicy = "pen-mouse-stylus-touch"
 ): boolean {
+	if (isInkDrawingTool(tool)) {
+		return shouldCaptureInkPointerEvent(event, tool, policy);
+	}
+	if (event.isPrimary === false || shouldPanAnnotationPointerEvent(event, tool, policy)) {
+		return false;
+	}
+	const inputMethod = getInputMethod(event);
+	return inputMethod === "pen" || inputMethod === "touch" || isStylusLikePointerEvent(event);
+}
+
+export function shouldPanAnnotationPointerEvent(
+	event: PointerEvent,
+	_tool: AnnotationTool,
+	policy: InkInputPolicy = "pen-mouse-stylus-touch"
+): boolean {
 	return event.pointerType === "touch" &&
 		event.isPrimary !== false &&
-		isInkDrawingTool(tool) &&
 		policy === "pen-mouse-only" &&
 		!isStylusLikePointerEvent(event);
 }
@@ -78,6 +92,11 @@ export function isStylusLikePointerEvent(event: PointerEvent): boolean {
 	};
 	if (webkitEvent.touchType === "stylus" || webkitEvent.webkitTouchType === "stylus") {
 		return true;
+	}
+	// Contact size, force, angle and tilt are inconsistent across touch drivers.
+	// In finger-pan mode, only an explicit stylus marker may turn touch into ink.
+	if (event.pointerType === "touch") {
+		return false;
 	}
 	const compactContact =
 		Number.isFinite(event.width) && event.width > 0 && event.width <= 8 &&
@@ -107,30 +126,8 @@ export function isStylusLikePointerEvent(event: PointerEvent): boolean {
 	return false;
 }
 
-export function isWebKitStylusTouch(touch: {
-	altitudeAngle?: number;
-	azimuthAngle?: number;
-	force?: number;
-	radiusX?: number;
-	radiusY?: number;
-	touchType?: string;
-}): boolean {
-	if (touch.touchType === "stylus") {
-		return true;
-	}
-	const compactContact =
-		typeof touch.radiusX === "number" && touch.radiusX > 0 && touch.radiusX <= 4 &&
-		typeof touch.radiusY === "number" && touch.radiusY > 0 && touch.radiusY <= 4;
-	const angledStylus =
-		typeof touch.altitudeAngle === "number" &&
-		Number.isFinite(touch.altitudeAngle) &&
-		touch.altitudeAngle > 0 &&
-		touch.altitudeAngle < Math.PI / 2 - 0.01;
-	const directedStylus =
-		typeof touch.azimuthAngle === "number" &&
-		Number.isFinite(touch.azimuthAngle) &&
-		Math.abs(touch.azimuthAngle) > 0.01;
-	return angledStylus || directedStylus || compactContact && typeof touch.force === "number" && touch.force > 0.01;
+export function isWebKitStylusTouch(touch: { touchType?: string }): boolean {
+	return touch.touchType === "stylus";
 }
 
 export function getCoalescedPointerEvents(event: PointerEvent): PointerEvent[] {

@@ -1,19 +1,7 @@
-/**
- * Device and pointer detection utilities for tablet-class WebViews and active stylus input.
- */
-
-export function isMobileWebKitTouchDevice(): boolean {
-	return typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)")?.matches === true;
-}
-
 export function isTabletWebKitTouchDevice(): boolean {
 	return typeof window !== "undefined" &&
 		window.matchMedia?.("(pointer: coarse)")?.matches === true &&
 		window.matchMedia?.("(hover: none)")?.matches === true;
-}
-
-export function isTabletStylusPlatform(): boolean {
-	return isMobileWebKitTouchDevice() || isTabletWebKitTouchDevice();
 }
 
 export type InputMethod = "pen" | "touch" | "mouse" | "unknown";
@@ -32,21 +20,7 @@ export function getInputMethod(event: PointerEvent): InputMethod {
 	if (type === "touch") return "touch";
 	if (type === "mouse") return "mouse";
 
-	// Fallback detection
-	if (event.isPrimary && event.pointerType === "touch") return "touch";
-	if (event.pointerType === "mouse") return "mouse";
-
 	return "unknown";
-}
-
-/**
- * Check if the event is from an active stylus on a tablet-class WebView.
- *
- * @param event - PointerEvent to check
- * @returns True if this appears to be a tablet stylus event
- */
-export function isTabletStylusEvent(event: PointerEvent): boolean {
-	return isTabletStylusPlatform() && event.pointerType === "pen";
 }
 
 /**
@@ -102,13 +76,3 @@ export function calculateVelocity(
 
 	return distance / deltaTimeMs;
 }
-
-export const DeviceInfo = {
-	isMobileWebKitTouchDevice,
-	isTabletWebKitTouchDevice,
-	isTabletStylusPlatform,
-	getInputMethod,
-	isTabletStylusEvent,
-	estimatePressureFromVelocity,
-	calculateVelocity
-};

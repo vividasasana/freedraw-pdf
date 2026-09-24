@@ -26,6 +26,8 @@ jobs:
         run: npm run check
       - name: Build plugin
         run: npm run build
+      - name: Verify compiled plugin
+        run: node scripts/check-built-plugin.js
       - name: Verify deployment privacy
         shell: pwsh
         run: ./scripts/check-deployment.ps1

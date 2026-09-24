@@ -140,7 +140,7 @@ writeText(
 	path.join(vaultRoot, "Start Here.md"),
 	`# Freedraw PDF test vault
 
-This vault contains the current **v2** build. The original project outside \`v2\` is not used by this vault.
+This vault contains the current build from the repository root.
 
 1. Open this folder as a vault in Obsidian.
 2. If Obsidian asks, trust the vault and enable **Freedraw PDF** under **Settings → Community plugins**.

@@ -37,6 +37,4 @@ Thumbs.db
 test-vault/
 
 # Local development snapshots; publish the current plugin at the repository root.
-/v0/
-/v1/
-/v2/
+/v[0-9]*/

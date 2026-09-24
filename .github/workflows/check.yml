@@ -20,4 +20,5 @@ jobs:
         shell: pwsh
         run: ./scripts/check-deployment.ps1
       - run: npm run build
+      - run: node scripts/check-built-plugin.js
       - run: npm run check:privacy

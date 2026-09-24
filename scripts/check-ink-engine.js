@@ -3,6 +3,7 @@ const path = require("path");
 const vm = require("vm");
 const { performance } = require("perf_hooks");
 const ts = require("typescript");
+const { deepEqual } = require("assert/strict");
 
 const projectRoot = path.resolve(__dirname, "..");
 
@@ -29,14 +30,6 @@ function createStrokeSamples() {
 	return points;
 }
 
-function getCommandCount(pathData) {
-	return (pathData.match(/[MQTLCZ]/g) ?? []).length;
-}
-
-function getCoordinatePairCount(pathData) {
-	return (pathData.match(/-?\d+(?:\.\d+)?,-?\d+(?:\.\d+)?/g) ?? []).length;
-}
-
 try {
 	const source = fs.readFileSync(path.join(projectRoot, "src", "ink", "inkEngine.ts"), "utf8");
 	const mainSource = fs.readFileSync(path.join(projectRoot, "main.ts"), "utf8");
@@ -48,15 +41,13 @@ try {
 	assert(source.includes("const effectiveUsePressure = usePressure;"), "stored stylus or simulated pressure must reach perfect-freehand");
 	assert(source.includes("taper: options.startTaper === undefined ? settings.taperStart : options.startTaper * geometryScale"), "eraser-cut starts must be able to suppress artificial tapering");
 	assert(source.includes("taper: options.endTaper === undefined ? settings.taperEnd : options.endTaper * geometryScale"), "eraser-cut ends must be able to suppress artificial tapering");
-	assert(source.includes("): string | null {\n\tconst outline = getSmoothInkStrokeOutline"), "live outline helper must retain the last Git version's return contract");
-	assert(source.includes("return getSvgPathFromStroke(outline) || null;"), "live outline helper must retain the last Git version's path publication behavior");
 	assert(source.includes('(renderMode === "live" || predictTail || !usePressure)'), "live fallback selection must match the last Git version");
 	const drawSmoothSource = source.slice(
 		source.indexOf("export function drawSmoothInkStroke"),
 		source.indexOf("export function drawInkDot")
 	);
 	const liveFastPathIndex = drawSmoothSource.indexOf('renderMode === "live"');
-	const outlinePathIndex = drawSmoothSource.indexOf("drawFreehandOutlineStroke");
+	const outlinePathIndex = drawSmoothSource.indexOf("fillInkStrokeOutline");
 	assert(
 		outlinePathIndex >= 0 && (liveFastPathIndex < 0 || outlinePathIndex < liveFastPathIndex),
 		"live ink must render the same pressure-sensitive outline before any uniform-width fallback"
@@ -80,8 +71,8 @@ try {
 		"committed rendering must reuse cached numeric outlines"
 	);
 	assert(
-		mainSource.includes("new Map<string, { signature: string; outline: InkStrokeOutline }>()"),
-		"native rendering must cache immutable numeric outlines instead of browser-native paths"
+		mainSource.includes("new WeakMap<StrokeAnnotation,") && mainSource.includes("outline: InkStrokeOutline;"),
+		"native rendering must cache numeric outlines without retaining deleted strokes"
 	);
 	assert(
 		mainSource.includes("fillInkStrokeOutline(context, cachedOutline);"),
@@ -121,12 +112,20 @@ try {
 		}
 	});
 	const moduleShim = { exports: {} };
-	vm.runInNewContext(transpiled.outputText, {
+	const inkContext = {
 		require,
 		module: moduleShim,
 		exports: moduleShim.exports,
-		console
-	}, { filename: "inkEngine.check.cjs" });
+		console,
+		formattedCoordinates: 0
+	};
+	vm.runInNewContext(`
+		const originalFormat = Number.prototype.toFixed;
+		Number.prototype.toFixed = function (...args) {
+			globalThis.formattedCoordinates++;
+			return originalFormat.apply(this, args);
+		};
+	` + transpiled.outputText, inkContext, { filename: "inkEngine.check.cjs" });
 	const ink = moduleShim.exports;
 	ink.setInkRenderSettings({ pressureMode: "auto", thinning: 0.5 });
 	const stroke = { widthScale: 8 / 1600, points: [] };
@@ -165,25 +164,22 @@ try {
 	assert(liveDrawOperations.includes("fill"), "live pressure ink must draw a filled variable-width outline");
 	assert(!liveDrawOperations.includes("stroke"), "live pressure ink must not collapse into one uniform-width centerline");
 
-	const committedPath = ink.getSmoothInkStrokePath(stroke.points, 1600, 2200, 8, true, false, { renderMode: "committed" });
-	const livePath = ink.getSmoothInkStrokePath(stroke.points, 1600, 2200, 8, true, true, { renderMode: "live" });
-	const releasePreviewPath = ink.getSmoothInkStrokePath(stroke.points, 1600, 2200, 8, true, false, { renderMode: "live" });
-	const tinyDotPath = ink.getSmoothInkStrokePath([
+	const committedOutline = ink.getSmoothInkStrokeOutline(stroke.points, 1600, 2200, 8, true, false, { renderMode: "committed" });
+	const liveOutline = ink.getSmoothInkStrokeOutline(stroke.points, 1600, 2200, 8, true, true, { renderMode: "live" });
+	const releasePreviewOutline = ink.getSmoothInkStrokeOutline(stroke.points, 1600, 2200, 8, true, false, { renderMode: "live" });
+	const tinyDotOutline = ink.getSmoothInkStrokeOutline([
 		{ x: 0.5, y: 0.5, pressure: 0.5, t: 0 },
 		{ x: 0.5001, y: 0.5001, pressure: 0.5, t: 8 }
 	], 1600, 2200, 8, true, false, { renderMode: "committed" });
 
-	assert(committedPath, "committed handwriting path was not generated");
-	assert(livePath, "live handwriting path was not generated");
-	assert(releasePreviewPath, "release-preview handwriting path was not generated");
-	assert(tinyDotPath === null, "tiny accidental dot should be suppressed");
-	assert(!/NaN|Infinity/.test(committedPath), "committed path contains invalid numeric output");
-	assert(!/NaN|Infinity/.test(livePath), "live path contains invalid numeric output");
-	assert(!/NaN|Infinity/.test(releasePreviewPath), "release-preview path contains invalid numeric output");
-	assert(getCoordinatePairCount(committedPath) >= 40, "committed path is too sparse and likely angular");
-	assert(getCoordinatePairCount(livePath) >= 32, "live path is too sparse and likely angular");
-	assert(releasePreviewPath === committedPath, "live release-preview and committed paths diverged, causing release-time stroke snap");
-	assert(getCoordinatePairCount(livePath) >= getCoordinatePairCount(committedPath) * 0.8, "live path is much sparser than committed path and will visibly change on release");
+	for (const outline of [committedOutline, liveOutline, releasePreviewOutline]) {
+		assert(outline && outline.every(point => point.every(Number.isFinite)), "handwriting outline must contain finite coordinates");
+	}
+	assert(tinyDotOutline === null, "tiny accidental dot should be suppressed");
+	assert(committedOutline.length >= 40, "committed outline is too sparse and likely angular");
+	assert(liveOutline.length >= 32, "live outline is too sparse and likely angular");
+	deepEqual(releasePreviewOutline, committedOutline, "release-preview geometry must not snap on pen-up");
+	assert(liveOutline.length >= committedOutline.length * 0.8, "live geometry must not become sparse");
 
 	const predictionLine = Array.from({ length: 12 }, (_, index) => ({
 		x: 0.1 + (index * 0.035),
@@ -191,19 +187,17 @@ try {
 		pressure: 0.55,
 		t: index * 8
 	}));
-	const canonicalPredictionPath = ink.getSmoothInkStrokePath(predictionLine, 1000, 1000, 10, true, false, { renderMode: "committed" });
-	const accuratePredictionPath = ink.getSmoothInkStrokePath(predictionLine, 1000, 1000, 10, true, true, { renderMode: "live", predictionStrength: 0 });
+	const canonicalPredictionOutline = ink.getSmoothInkStrokeOutline(predictionLine, 1000, 1000, 10, true, false, { renderMode: "committed" });
+	const accuratePredictionOutline = ink.getSmoothInkStrokeOutline(predictionLine, 1000, 1000, 10, true, true, { renderMode: "live", predictionStrength: 0 });
 	const balancedPredictionOutline = ink.getSmoothInkStrokeOutline(predictionLine, 1000, 1000, 10, true, true, { renderMode: "live", predictionStrength: 0.45 });
 	const smoothPredictionOutline = ink.getSmoothInkStrokeOutline(predictionLine, 1000, 1000, 10, true, true, { renderMode: "live", predictionStrength: 1 });
-	assert(accuratePredictionPath === canonicalPredictionPath, "closest preview must use exactly the saved stroke geometry");
+	deepEqual(accuratePredictionOutline, canonicalPredictionOutline, "closest preview must use exactly the saved stroke geometry");
 	assert(balancedPredictionOutline && smoothPredictionOutline, "adjustable live prediction outlines were not generated");
-	const accuratePredictionOutline = ink.getSmoothInkStrokeOutline(predictionLine, 1000, 1000, 10, true, true, { renderMode: "live", predictionStrength: 0 });
 	const maxOutlineX = (outline) => Math.max(...outline.map((point) => point[0]));
 	assert(accuratePredictionOutline, "closest live prediction outline was not generated");
 	assert(maxOutlineX(balancedPredictionOutline) > maxOutlineX(accuratePredictionOutline), "balanced preview must respond ahead of closest preview");
 	assert(maxOutlineX(smoothPredictionOutline) > maxOutlineX(balancedPredictionOutline), "smoothest preview must respond ahead of balanced preview");
 
-	const committedOutline = ink.getSmoothInkStrokeOutline(stroke.points, 1600, 2200, 8, true, false, { renderMode: "committed" });
 	const halfScaleOutline = ink.getSmoothInkStrokeOutline(stroke.points, 800, 1100, 4, true, false, { renderMode: "committed" });
 	assert(committedOutline && halfScaleOutline, "zoom-scale comparison outlines were not generated");
 	assert(
@@ -233,13 +227,13 @@ try {
 
 	const start = performance.now();
 	for (let index = 0; index < 30; index += 1) {
-		const pathData = ink.getSmoothInkStrokePath(stroke.points, 1600, 2200, 8, true, index % 2 === 0, { renderMode: index % 2 === 0 ? "live" : "committed" });
-		assert(pathData, "timed path generation returned no path");
+		ink.drawSmoothInkStroke(liveDrawContext, stroke.points, 1600, 2200, 8, true, index % 2 === 0, { renderMode: index % 2 === 0 ? "live" : "committed" });
 	}
 	const elapsedMs = performance.now() - start;
-	assert(elapsedMs < 900, `ink path generation is too slow (${elapsedMs.toFixed(1)} ms for 30 paths)`);
+	assert(inkContext.formattedCoordinates === 0, "canvas ink must not serialize unused SVG coordinates");
+	assert(elapsedMs < 900, `ink drawing is too slow (${elapsedMs.toFixed(1)} ms for 30 strokes)`);
 
-	console.log(`Ink engine verifier passed. points=${stroke.points.length}; committedPairs=${getCoordinatePairCount(committedPath)}; livePairs=${getCoordinatePairCount(livePath)}; committedCommands=${getCommandCount(committedPath)}; liveCommands=${getCommandCount(livePath)}; time=${elapsedMs.toFixed(1)}ms`);
+	console.log(`Ink engine verifier passed. points=${stroke.points.length}; committedOutline=${committedOutline.length}; liveOutline=${liveOutline.length}; drawTime=${elapsedMs.toFixed(1)}ms`);
 } finally {
 	// No filesystem cleanup required; the transpiled module is evaluated in memory.
 }
