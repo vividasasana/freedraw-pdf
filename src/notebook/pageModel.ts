@@ -1,3 +1,4 @@
+import type { TFile } from "obsidian";
 import { generateId } from "../utils/general";
 import type { AnnotationDocument, NotebookPage, NotebookPageSize, NotebookTemplate } from "../types";
 
@@ -41,6 +42,46 @@ export function createTemplateNotebookPage(
 		textItems: [],
 		shapes: []
 	};
+}
+
+export function createPdfBackedNotebookPage(
+	title: string,
+	sourceFile: TFile,
+	sourcePage: number,
+	pageSize: NotebookPageSize,
+	paperColor: string
+): NotebookPage {
+	return {
+		id: generateId("page"),
+		title,
+		kind: "pdf",
+		sourceLabel: `${sourceFile.name} page ${sourcePage}`,
+		pdfSource: {
+			filePath: sourceFile.path,
+			page: sourcePage
+		},
+		template: "blank",
+		paperColor,
+		pageSize,
+		strokes: [],
+		textItems: [],
+		shapes: []
+	};
+}
+
+export function getNotebookPageKindLabel(page: NotebookPage): string {
+	if (page.kind === "pdf" && page.pdfSource) {
+		return `PDF page ${page.pdfSource.page}`;
+	}
+	return "Template page";
+}
+
+export function getNotebookPageSourceSummary(page: NotebookPage): string {
+	if (page.kind === "pdf" && page.pdfSource) {
+		const fileName = page.pdfSource.filePath.split("/").pop()?.split("\\").pop() ?? page.pdfSource.filePath;
+		return `${fileName} p.${page.pdfSource.page}`;
+	}
+	return getNotebookTemplateLabel(page.template);
 }
 
 export function getNotebookTemplateLabel(template: NotebookTemplate): string {

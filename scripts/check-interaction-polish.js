@@ -138,7 +138,7 @@ assertContains(
 assertContains(
 	"src/pdf/nativePdfJs.ts",
 	nativePdfJsTs,
-	"const loadedPdfJs = await loadPdfJs();",
+	"const loadedPdfJs: unknown = await loadPdfJs();",
 	"the adapter must use Obsidian's supported lazy PDF.js loader"
 );
 assertContains(

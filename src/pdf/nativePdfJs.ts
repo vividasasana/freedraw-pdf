@@ -33,7 +33,7 @@ function isNativePdfJsLib(value: unknown): value is NativePdfJsLib {
 
 export async function loadNativePdfJs(): Promise<NativePdfJsLib> {
 	try {
-		const loadedPdfJs = await loadPdfJs();
+		const loadedPdfJs: unknown = await loadPdfJs();
 		if (isNativePdfJsLib(loadedPdfJs)) {
 			return loadedPdfJs;
 		}

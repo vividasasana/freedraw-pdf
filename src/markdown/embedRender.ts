@@ -18,7 +18,19 @@ import {
 } from "../text/textLayout";
 import { clamp } from "../utils/general";
 import { isEmbeddedImageDataUrl } from "../utils/imageData";
-import { normalizeRect } from "../annotation/interaction";
+
+export function normalizeRect(rect: NormalizedRect): NormalizedRect | null {
+	const normalized = {
+		left: clamp(Math.min(rect.left, rect.right), 0, 1),
+		top: clamp(Math.min(rect.top, rect.bottom), 0, 1),
+		right: clamp(Math.max(rect.left, rect.right), 0, 1),
+		bottom: clamp(Math.max(rect.top, rect.bottom), 0, 1)
+	};
+	if (normalized.right <= normalized.left || normalized.bottom <= normalized.top) {
+		return null;
+	}
+	return normalized;
+}
 
 export function cloneCanvas(source: HTMLCanvasElement): HTMLCanvasElement {
 	const canvas = createEl("canvas");

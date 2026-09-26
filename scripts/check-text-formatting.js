@@ -118,10 +118,12 @@ const {
 	applyCanvasTextStyle,
 	getAlignedTextX,
 	getCanvasTextLines,
+	getHorizontalTextCaretIndex,
 	getInlineTextEditorLayout,
 	getRenderedTextFontSize,
 	getTextBlockHeight,
 	getTextBlockTop,
+	getVerticallyCenteredTextTop,
 	getWrappedCanvasTextLines,
 	measureAutoFitTextBox,
 	resolveTextAlignment,
@@ -157,6 +159,15 @@ const unwrapped = getCanvasTextLines(context, "abcdefghij", 30, false);
 if (unwrapped.length !== 1 || unwrapped[0] !== "abcdefghij") {
 	throw new Error(`Disabled word wrapping is incorrect: ${JSON.stringify(unwrapped)}`);
 }
+if (
+	getHorizontalTextCaretIndex("abc", 2, "left") !== 1 ||
+	getHorizontalTextCaretIndex("abc", 2, "right") !== 3 ||
+	getHorizontalTextCaretIndex("one two", 7, "left", true) !== 4 ||
+	getHorizontalTextCaretIndex("one two", 0, "right", true) !== 4 ||
+	getHorizontalTextCaretIndex("a\uD83D\uDE00b", 3, "left") !== 1
+) {
+	throw new Error("Horizontal text caret movement is incorrect.");
+}
 if (getAlignedTextX(10, 80, "left") !== 10 || getAlignedTextX(10, 80, "center") !== 50 || getAlignedTextX(10, 80, "right") !== 90) {
 	throw new Error("Aligned text origins are incorrect.");
 }
@@ -184,7 +195,7 @@ if (getTextBlockHeight(18, 1) !== 18 || Math.abs(getTextBlockHeight(18, 2) - 42.
 if (getTextBlockHeight(18, 2, 2) !== 54) {
 	throw new Error("Custom line spacing is incorrect.");
 }
-if (getTextBlockTop(10, 40, 18, 1, "middle") !== 21 || getTextBlockTop(10, 18, 18, 1, "middle") !== 10) {
+if (getVerticallyCenteredTextTop(10, 40, 18, 1) !== 21 || getVerticallyCenteredTextTop(10, 18, 18, 1) !== 10) {
 	throw new Error("PowerPoint-style vertical text centering is incorrect.");
 }
 if (

@@ -46,3 +46,17 @@ export function drawTemplatePageBackground(context: CanvasRenderingContext2D, wi
 	}
 	context.restore();
 }
+
+export function createTemplatePageBackgroundDataUrl(width: number, height: number, page: NotebookPage): string | null {
+	const safeWidth = Math.max(1, Math.round(width));
+	const safeHeight = Math.max(1, Math.round(height));
+	const canvas = createEl("canvas");
+	canvas.width = safeWidth;
+	canvas.height = safeHeight;
+	const context = canvas.getContext("2d");
+	if (!context) {
+		return null;
+	}
+	drawTemplatePageBackground(context, safeWidth, safeHeight, page);
+	return canvas.toDataURL("image/png");
+}

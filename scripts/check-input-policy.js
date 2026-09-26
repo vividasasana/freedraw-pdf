@@ -41,8 +41,7 @@ assertContains("src/pointer/pointerInput.ts", pointerInputTs, "policy: InkInputP
 assertContains("src/pointer/pointerInput.ts", pointerInputTs, "policy === \"allow-touch\"", "touch fallback policy must be implemented");
 assertContains("src/pointer/pointerInput.ts", pointerInputTs, "policy === \"pen-mouse-only\"", "strict pen/mouse policy must be implemented");
 assertContains("src/pointer/pointerInput.ts", pointerInputTs, "export function shouldCaptureInkPointerEvent", "stylus routing must be testable independently of the PDF viewer");
-assertContains("src/pointer/pointerInput.ts", pointerInputTs, "export function shouldCaptureAnnotationPointerEvent", "touch selection routing must be testable independently of the PDF viewer");
-assertContains("src/pointer/pointerInput.ts", pointerInputTs, "export function shouldPanAnnotationPointerEvent", "finger panning must be testable independently of the PDF viewer");
+assertContains("src/pointer/pointerInput.ts", pointerInputTs, "export function shouldPanInkPointerEvent", "finger panning must be testable independently of the PDF viewer");
 assertContains("src/pointer/pointerInput.ts", pointerInputTs, "export function isStylusLikePointerEvent", "WebKit Pencil fallback detection must be testable independently of the PDF viewer");
 assertContains("src/pointer/pointerInput.ts", pointerInputTs, "export function isWebKitStylusTouch", "iOS Touch.touchType Pencil detection must be testable independently of the PDF viewer");
 assertContains("src/pointer/pointerInput.ts", pointerInputTs, "event.isPrimary === false", "touch fallback must ignore secondary touches");
@@ -72,7 +71,7 @@ assertContains("main.ts", mainTs, "private startFingerPanInertia", "captured fin
 assertContains("main.ts", mainTs, "this.redrawHistoryChangeImmediately(affectedPage);", "history actions must repaint their affected page synchronously");
 assertContains("main.ts", mainTs, 'this.cancelPageRenderJobs("history changed")', "history actions must invalidate stale render publications");
 assertContains("main.ts", mainTs, "shouldIgnoreInkPointerEvent(event, this.currentTool, this.getInkInputPolicy())", "native PDF pointer handling must pass the policy");
-assertContains("main.ts", mainTs, "if (this.handleCapturedAnnotationPointerDown(event))", "document capture must reserve annotation input before fallback or native panning");
+assertContains("main.ts", mainTs, "if (this.handleCapturedInkPointerDown(event))", "document capture must reserve Pencil input before fallback or native panning");
 assertContains("main.ts", mainTs, "canvas = this.ensureSurfaceAtClientPoint(event.clientX, event.clientY)?.overlayEl ?? null;", "Pencil capture must resolve the annotation canvas from page coordinates");
 assertContains("main.ts", mainTs, 'this.ownerDocument.addEventListener("touchstart", this.handleDocumentTouchStart, { capture: true, passive: false });', "iOS Pencil identification must run before native touch scrolling");
 assertContains("main.ts", mainTs, "this.handlePointerDownForCanvas(pendingPointer, surface.overlayEl, true);", "a Touch.touchType stylus signal must reclaim its pending pointer stream as ink");
@@ -97,7 +96,7 @@ const viewPointerMoveSource = mainTs.slice(
 	mainTs.indexOf("private readonly handleViewPointerMove"),
 	mainTs.indexOf("private readonly handleViewPointerLeave")
 );
-assertContains("main.ts handleViewPointerMove", viewPointerMoveSource, "shouldPanAnnotationPointerEvent(event", "touch panning must bypass the eraser pointer preview");
+assertContains("main.ts handleViewPointerMove", viewPointerMoveSource, "shouldPanInkPointerEvent(event", "touch panning must bypass the eraser pointer preview");
 assertContains("main.ts handleViewPointerMove", viewPointerMoveSource, "this.hideToolPreview();", "touch panning must immediately hide an existing eraser preview");
 const fingerPanDownSource = mainTs.slice(
 	mainTs.indexOf("private handleFingerPanPointerDown"),
@@ -186,14 +185,6 @@ const forcefulFinger = {
 	altitudeAngle: Math.PI / 2,
 	azimuthAngle: 0
 };
-const compactFingerWithStylusLikeFields = {
-	...primaryTouch,
-	width: 3,
-	height: 3,
-	tiltX: 12,
-	webkitForce: 0.4,
-	azimuthAngle: 0.2
-};
 if (pointerInput.shouldIgnoreInkPointerEvent(primaryTouch, "pen", "allow-touch")) {
 	throw new Error("primary iPad touch was rejected in touch drawing mode");
 }
@@ -221,22 +212,13 @@ if (pointerInput.shouldCaptureInkPointerEvent(primaryTouch, "pen", "pen-mouse-on
 if (!pointerInput.isStylusLikePointerEvent(webkitStylusTouch)
 	|| pointerInput.shouldIgnoreInkPointerEvent(webkitStylusTouch, "pen", "pen-mouse-only")
 	|| !pointerInput.shouldCaptureInkPointerEvent(webkitStylusTouch, "pen", "pen-mouse-only")
-	|| pointerInput.shouldPanAnnotationPointerEvent(webkitStylusTouch, "pen", "pen-mouse-only")) {
+	|| pointerInput.shouldPanInkPointerEvent(webkitStylusTouch, "pen", "pen-mouse-only")) {
 	throw new Error("WebKit Pencil touch fallback was not reserved exclusively for ink");
 }
 if (pointerInput.isStylusLikePointerEvent(forcefulFinger)
 	|| !pointerInput.shouldIgnoreInkPointerEvent(forcefulFinger, "pen", "pen-mouse-only")
-	|| !pointerInput.shouldPanAnnotationPointerEvent(forcefulFinger, "pen", "pen-mouse-only")) {
+	|| !pointerInput.shouldPanInkPointerEvent(forcefulFinger, "pen", "pen-mouse-only")) {
 	throw new Error("broad finger contact was misclassified as Apple Pencil");
-}
-if (pointerInput.isStylusLikePointerEvent(compactFingerWithStylusLikeFields)
-	|| !pointerInput.shouldIgnoreInkPointerEvent(compactFingerWithStylusLikeFields, "pen", "pen-mouse-only")
-	|| !pointerInput.shouldPanAnnotationPointerEvent(compactFingerWithStylusLikeFields, "pen", "pen-mouse-only")
-	|| pointerInput.shouldCaptureAnnotationPointerEvent(compactFingerWithStylusLikeFields, "pen", "pen-mouse-only")) {
-	throw new Error("a touch pointer with stylus-like fields was admitted as ink in finger-pan mode");
-}
-if (pointerInput.isWebKitStylusTouch({ touchType: "direct", radiusX: 3, radiusY: 3, force: 0.4, azimuthAngle: 0.2 })) {
-	throw new Error("a compact direct touch was reclaimed as Apple Pencil ink");
 }
 if (!pointerInput.isWebKitStylusTouch({ touchType: "stylus" })) {
 	throw new Error("iOS Touch.touchType stylus was not identified as Apple Pencil");
@@ -254,26 +236,17 @@ if (pointerInput.isWebKitStylusTouch({
 if (pointerInput.shouldCaptureInkPointerEvent({ ...stylus, pointerType: "mouse" }, "pen", "pen-mouse-only")) {
 	throw new Error("mouse input was unnecessarily captured at the document boundary");
 }
-if (!pointerInput.shouldPanAnnotationPointerEvent(primaryTouch, "pen", "pen-mouse-only")) {
+if (!pointerInput.shouldPanInkPointerEvent(primaryTouch, "pen", "pen-mouse-only")) {
 	throw new Error("strict finger-pan mode did not route primary finger input to the PDF pan controller");
 }
-if (pointerInput.shouldPanAnnotationPointerEvent(secondaryTouch, "pen", "pen-mouse-only")) {
+if (pointerInput.shouldPanInkPointerEvent(secondaryTouch, "pen", "pen-mouse-only")) {
 	throw new Error("secondary touch was incorrectly admitted as a PDF pan controller");
 }
-if (pointerInput.shouldPanAnnotationPointerEvent(stylus, "pen", "pen-mouse-only")) {
+if (pointerInput.shouldPanInkPointerEvent(stylus, "pen", "pen-mouse-only")) {
 	throw new Error("Apple Pencil was incorrectly routed through finger panning");
 }
-if (pointerInput.shouldPanAnnotationPointerEvent(primaryTouch, "pen", "allow-touch")) {
+if (pointerInput.shouldPanInkPointerEvent(primaryTouch, "pen", "allow-touch")) {
 	throw new Error("finger drawing mode incorrectly routed touch through panning");
-}
-if (!pointerInput.shouldPanAnnotationPointerEvent(primaryTouch, "select", "pen-mouse-only")) {
-	throw new Error("finger-pan mode stopped panning when the select tool was active");
-}
-if (!pointerInput.shouldCaptureAnnotationPointerEvent(primaryTouch, "select", "allow-touch")) {
-	throw new Error("finger drawing mode did not reserve touch selection before the PDF viewer");
-}
-if (pointerInput.shouldCaptureAnnotationPointerEvent(primaryTouch, "select", "pen-mouse-only")) {
-	throw new Error("finger-pan mode captured touch selection instead of panning");
 }
 const lightPencilPressure = pointerInput.resolvePointerPressure({ ...stylus, pressure: 0.14 }, null, 0, "auto");
 const firmPencilPressure = pointerInput.resolvePointerPressure({ ...stylus, pressure: 0.86 }, null, 0, "auto");

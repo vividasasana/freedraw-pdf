@@ -353,7 +353,9 @@ export class AnnotationStore {
 				sourceFile: file.path,
 				sourcePdf: getPdfIdentity(file),
 				updatedAt: new Date().toISOString()
-			}
+			},
+			null,
+			2
 		);
 		const previous = this.writes.get(path) ?? Promise.resolve();
 		const write = previous.catch(() => undefined).then(async () => {
@@ -395,7 +397,7 @@ export class AnnotationStore {
 	}
 
 	async saveRecoveryCopy(file: TFile, document: AnnotationDocument): Promise<string> {
-		const payload = JSON.stringify({ ...document, sourceFile: file.path, sourcePdf: getPdfIdentity(file) });
+		const payload = JSON.stringify({ ...document, sourceFile: file.path, sourcePdf: getPdfIdentity(file) }, null, 2);
 		const previous = this.recoveryCopies.get(document);
 		if (previous?.payload === payload && await this.app.vault.adapter.exists(previous.path)) {
 			return previous.path;
@@ -425,7 +427,7 @@ export class AnnotationStore {
 			if (!await this.app.vault.adapter.exists(oldSidecarPath)) { return; }
 			const raw = await this.app.vault.adapter.read(oldSidecarPath);
 			const parsed = JSON.parse(raw) as AnnotationDocument;
-			const payload = JSON.stringify({ ...parsed, sourceFile: identity.path, sourcePdf: identity, updatedAt: new Date().toISOString() });
+			const payload = JSON.stringify({ ...parsed, sourceFile: identity.path, sourcePdf: identity, updatedAt: new Date().toISOString() }, null, 2);
 			if (await this.app.vault.adapter.exists(newSidecarPath) && await this.app.vault.adapter.read(newSidecarPath) !== raw) {
 				throw new Error("Annotation destination already exists. Both sidecars were preserved.");
 			}

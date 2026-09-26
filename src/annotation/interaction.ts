@@ -1,4 +1,4 @@
-import { distanceBetween, distanceToSegment, segmentsIntersect } from "./geometry";
+import { distanceBetween, distanceToSegment, pathIntersectsPolygon, segmentsIntersect } from "./geometry";
 import { getShapeBounds, getStrokeBounds, getTextBounds } from "./bounds";
 import { getAnnotationRenderables } from "./renderOrder";
 import { clamp, generateId } from "../utils/general";
@@ -166,6 +166,19 @@ export function distanceToStroke(point: AnnotationPoint, stroke: StrokeAnnotatio
 		nearest = Math.min(nearest, distanceToSegment(point, stroke.points[index - 1], stroke.points[index]));
 	}
 	return nearest;
+}
+
+export function polygonIntersectsBounds(
+	polygon: AnnotationPoint[],
+	bounds: { left: number; right: number; top: number; bottom: number }
+): boolean {
+	const rectPoints: AnnotationPoint[] = [
+		{ x: bounds.left, y: bounds.top, pressure: 0.5 },
+		{ x: bounds.right, y: bounds.top, pressure: 0.5 },
+		{ x: bounds.right, y: bounds.bottom, pressure: 0.5 },
+		{ x: bounds.left, y: bounds.bottom, pressure: 0.5 }
+	];
+	return pathIntersectsPolygon(rectPoints, polygon, true);
 }
 
 export function distanceToShape(point: AnnotationPoint, shape: ShapeAnnotation): number {

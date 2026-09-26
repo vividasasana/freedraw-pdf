@@ -50,28 +50,14 @@ export function shouldCaptureInkPointerEvent(
 	return inputMethod === "pen" || inputMethod === "touch";
 }
 
-export function shouldCaptureAnnotationPointerEvent(
+export function shouldPanInkPointerEvent(
 	event: PointerEvent,
 	tool: AnnotationTool,
 	policy: InkInputPolicy = "pen-mouse-stylus-touch"
 ): boolean {
-	if (isInkDrawingTool(tool)) {
-		return shouldCaptureInkPointerEvent(event, tool, policy);
-	}
-	if (event.isPrimary === false || shouldPanAnnotationPointerEvent(event, tool, policy)) {
-		return false;
-	}
-	const inputMethod = getInputMethod(event);
-	return inputMethod === "pen" || inputMethod === "touch" || isStylusLikePointerEvent(event);
-}
-
-export function shouldPanAnnotationPointerEvent(
-	event: PointerEvent,
-	_tool: AnnotationTool,
-	policy: InkInputPolicy = "pen-mouse-stylus-touch"
-): boolean {
 	return event.pointerType === "touch" &&
 		event.isPrimary !== false &&
+		isInkDrawingTool(tool) &&
 		policy === "pen-mouse-only" &&
 		!isStylusLikePointerEvent(event);
 }
@@ -93,8 +79,8 @@ export function isStylusLikePointerEvent(event: PointerEvent): boolean {
 	if (webkitEvent.touchType === "stylus" || webkitEvent.webkitTouchType === "stylus") {
 		return true;
 	}
-	// Contact size, force, angle and tilt are inconsistent across touch drivers.
-	// In finger-pan mode, only an explicit stylus marker may turn touch into ink.
+	// Touch drivers can report force, small contacts, tilt and angles for fingers.
+	// Only an explicit stylus marker may override finger-pan mode for touch.
 	if (event.pointerType === "touch") {
 		return false;
 	}
@@ -126,7 +112,14 @@ export function isStylusLikePointerEvent(event: PointerEvent): boolean {
 	return false;
 }
 
-export function isWebKitStylusTouch(touch: { touchType?: string }): boolean {
+export function isWebKitStylusTouch(touch: {
+	altitudeAngle?: number;
+	azimuthAngle?: number;
+	force?: number;
+	radiusX?: number;
+	radiusY?: number;
+	touchType?: string;
+}): boolean {
 	return touch.touchType === "stylus";
 }
 

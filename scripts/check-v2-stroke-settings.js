@@ -48,11 +48,11 @@ async function main(){
  const mainSource=fs.readFileSync(path.join(root,'main.ts'),'utf8');
  const syntax=ts.createSourceFile('main.ts',mainSource,ts.ScriptTarget.Latest,true);
  const sessionNode=syntax.statements.find(n=>ts.isClassDeclaration(n)&&n.name?.text==='NativePdfAnnotatorSession');
- const methods=['getCachedStrokeOutline','drawReliablePdfStroke'].map(name=>sessionNode.members.find(m=>m.name?.getText(syntax)===name).getText(syntax)).join('\n');
+ const methods=['getStrokePathSignature','getCachedStrokeOutline','drawReliablePdfStroke'].map(name=>sessionNode.members.find(m=>m.name?.getText(syntax)===name).getText(syntax)).join('\n');
  let publishedOptions;
  const context={getSmoothInkStrokeOutline:ink.getSmoothInkStrokeOutline,drawSmoothInkStroke:(...args)=>publishedOptions=args.at(-1),fillInkStrokeOutline(){}};
  vm.runInNewContext(ts.transpileModule('class Session {'+methods+'}globalThis.Session=Session;',{compilerOptions:{target:ts.ScriptTarget.ES2020}}).outputText,context);
- const session=new context.Session();session.strokePathCache=new WeakMap();
+ const session=new context.Session();session.strokePathCache=new Map();
  const surface={lastWidth:1000,lastHeight:1400},stroke=opened.document.strokes[0];
  assert.deepEqual(session.getCachedStrokeOutline(surface,stroke,5,true,false),before,'Committed canvas must use the stored settings');
  session.drawReliablePdfStroke({},surface,stroke,5,true,false,true,0);

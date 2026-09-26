@@ -33,10 +33,6 @@ jobs:
         run: ./scripts/check-deployment.ps1
       - name: Recheck generated asset privacy
         run: npm run check:privacy
-      - name: Package plugin
-        run: |
-          mkdir -p dist
-          zip -j "dist/freedraw-pdf-${GITHUB_REF_NAME}.zip" manifest.json main.js styles.css
       - name: Attest release artifacts
         uses: actions/attest-build-provenance@v2
         with:
@@ -44,11 +40,10 @@ jobs:
             manifest.json
             main.js
             styles.css
-            dist/freedraw-pdf-*.zip
       - name: Publish version notes and assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" --verify-tag --title "Freedraw PDF $GITHUB_REF_NAME" \
             --notes-file "docs/releases/${GITHUB_REF_NAME}.md" \
-            manifest.json main.js styles.css "dist/freedraw-pdf-${GITHUB_REF_NAME}.zip"
+            manifest.json main.js styles.css

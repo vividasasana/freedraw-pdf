@@ -402,6 +402,26 @@ function getRenderStrokePoints(points: InkPoint[], predictTail: boolean, predict
 	return smoothStrokeCenterline(preparedPoints, 1, stabilization);
 }
 
+export function getSvgPathFromStroke(outline: number[][], closed = true): string {
+	const length = outline.length;
+	if (length < 4) {
+		return "";
+	}
+	let first = outline[0];
+	let second = outline[1];
+	const third = outline[2];
+	let result = `M${first[0].toFixed(2)},${first[1].toFixed(2)} Q${second[0].toFixed(2)},${second[1].toFixed(2)} ${average(second[0], third[0]).toFixed(2)},${average(second[1], third[1]).toFixed(2)} T`;
+	for (let index = 2; index < length - 1; index += 1) {
+		first = outline[index];
+		second = outline[index + 1];
+		result += `${average(first[0], second[0]).toFixed(2)},${average(first[1], second[1]).toFixed(2)} `;
+	}
+	if (closed) {
+		result += "Z";
+	}
+	return result;
+}
+
 export function getSmoothInkStrokeOutline(
 	points: InkPoint[],
 	width: number,
@@ -459,6 +479,23 @@ export function getSmoothInkStrokeOutline(
 	}
 }
 
+export function getSmoothInkStrokePath(
+	points: InkPoint[],
+	width: number,
+	height: number,
+	baseWidth: number,
+	usePressure: boolean,
+	predictTail: boolean,
+	options: InkRenderOptions = {}
+): string | null {
+	const outline = getSmoothInkStrokeOutline(points, width, height, baseWidth, usePressure, predictTail, options);
+	if (!outline) {
+		return null;
+	}
+	const pathData = getSvgPathFromStroke(outline);
+	return pathData || null;
+}
+
 export function fillInkStrokeOutline(context: CanvasRenderingContext2D, outline: InkStrokeOutline): boolean {
 	if (outline.length < 4) {
 		return false;
@@ -489,6 +526,23 @@ export function fillInkStrokeOutline(context: CanvasRenderingContext2D, outline:
 	return true;
 }
 
+function drawFreehandOutlineStroke(
+	context: CanvasRenderingContext2D,
+	points: InkPoint[],
+	width: number,
+	height: number,
+	baseWidth: number,
+	usePressure: boolean,
+	predictTail: boolean,
+	options: InkRenderOptions = {}
+): string | null {
+	const outline = getSmoothInkStrokeOutline(points, width, height, baseWidth, usePressure, predictTail, options);
+	if (!outline || !fillInkStrokeOutline(context, outline)) {
+		return null;
+	}
+	return getSvgPathFromStroke(outline) || null;
+}
+
 function drawUniformSmoothStroke(
 	context: CanvasRenderingContext2D,
 	points: InkPoint[],
@@ -497,9 +551,11 @@ function drawUniformSmoothStroke(
 	baseWidth: number,
 	usePressure: boolean,
 	predictTail: boolean,
+	renderMode: "live" | "committed",
 	predictionStrength = 1,
 	settings = activeInkRenderSettings
 ): boolean {
+	void renderMode;
 	const renderPoints = getRenderStrokePoints(points, predictTail, predictionStrength, settings);
 	if (renderPoints.length < 3) {
 		return false;
@@ -535,17 +591,17 @@ export function drawSmoothInkStroke(
 	usePressure: boolean,
 	predictTail = false,
 	options: InkRenderOptions = {}
-): void {
+): string | null {
 	if (points.length === 0) {
-		return;
+		return null;
 	}
 	const renderMode = options.renderMode ?? (predictTail ? "live" : "committed");
-	const outline = getSmoothInkStrokeOutline(points, width, height, baseWidth, usePressure, predictTail, { ...options, renderMode });
-	if (outline && fillInkStrokeOutline(context, outline)) {
-		return;
+	const pathData = drawFreehandOutlineStroke(context, points, width, height, baseWidth, usePressure, predictTail, { ...options, renderMode });
+	if (pathData) {
+		return pathData;
 	}
-	if ((renderMode === "live" || predictTail || !usePressure) && drawUniformSmoothStroke(context, points, width, height, baseWidth, usePressure, predictTail, options.predictionStrength, options.inkSettings)) {
-		return;
+	if ((renderMode === "live" || predictTail || !usePressure) && drawUniformSmoothStroke(context, points, width, height, baseWidth, usePressure, predictTail, renderMode, options.predictionStrength, options.inkSettings)) {
+		return null;
 	}
 	const renderPoints = getRenderStrokePoints(points, predictTail, options.predictionStrength, options.inkSettings);
 	const cumulativeDistances = getCumulativeStrokeDistances(renderPoints);
@@ -557,7 +613,7 @@ export function drawSmoothInkStroke(
 		context.moveTo(first.x * width, first.y * height);
 		context.lineTo((first.x + 0.0001) * width, (first.y + 0.0001) * height);
 		context.stroke();
-		return;
+		return null;
 	}
 	if (renderPoints.length === 2) {
 		const second = renderPoints[1];
@@ -567,7 +623,7 @@ export function drawSmoothInkStroke(
 		context.moveTo(first.x * width, first.y * height);
 		context.lineTo(second.x * width, second.y * height);
 		context.stroke();
-		return;
+		return null;
 	}
 
 	let previousAnchor = first;
@@ -599,4 +655,5 @@ export function drawSmoothInkStroke(
 	context.moveTo(previousAnchor.x * width, previousAnchor.y * height);
 	context.lineTo(last.x * width, last.y * height);
 	context.stroke();
+	return null;
 }

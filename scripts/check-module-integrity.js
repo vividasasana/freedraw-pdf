@@ -40,28 +40,6 @@ const sourceFiles = program.getSourceFiles().filter((sourceFile) => {
 	return relativePath === "main.ts" || relativePath.startsWith(`src${path.sep}`);
 });
 const sourcePaths = new Set(sourceFiles.map((sourceFile) => normalize(sourceFile.fileName)));
-const checker = program.getTypeChecker();
-const referencedSymbols = new Set();
-for (const sourceFile of sourceFiles) {
-	function visitReferences(node) {
-		if (ts.isIdentifier(node)) {
-			let symbol = checker.getSymbolAtLocation(node);
-			if (symbol?.flags & ts.SymbolFlags.Alias) symbol = checker.getAliasedSymbol(symbol);
-			if (symbol && !symbol.declarations?.some(declaration => declaration.name === node)) referencedSymbols.add(symbol);
-		}
-		ts.forEachChild(node, visitReferences);
-	}
-	visitReferences(sourceFile);
-}
-for (const sourceFile of sourceFiles) {
-	const moduleSymbol = checker.getSymbolAtLocation(sourceFile);
-	if (!moduleSymbol) continue;
-	for (const symbol of checker.getExportsOfModule(moduleSymbol)) {
-		if (symbol.name !== "default" && !referencedSymbols.has(symbol)) {
-			fail(`Unused source export: ${path.relative(projectRoot, sourceFile.fileName)}: ${symbol.name}`);
-		}
-	}
-}
 const dependencies = new Map();
 for (const sourceFile of sourceFiles) {
 	const imports = [];

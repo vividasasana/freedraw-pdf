@@ -50,7 +50,7 @@ assertContains("src/export/mixedDocumentExport.ts", mixedExportTs, "hasEditableN
 
 assertContains("package.json", JSON.stringify(packageJson.scripts), "check:templates", "package scripts must expose this verifier");
 
-// The compiled PDF creation path is exercised by check-built-plugin.js;
-// local function/constant names are intentionally minified in production.
+// Compiled PDF creation is exercised by check-built-plugin.js. Production
+// minification deliberately renames local functions and constants.
 
 console.log("Template consistency verifier passed.");

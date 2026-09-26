@@ -158,7 +158,7 @@ assertContains("main.ts", mainTs, "private promoteCurrentTransientPreview(pageNu
 assertContains("main.ts", mainTs, "this.promoteCurrentTransientPreview(pageNumber);", "stroke commit paths must keep the just-drawn stroke visible without full rerendering");
 assertContains("main.ts", mainTs, "private promoteTransientLayer(surface: PageSurface): void", "commits must copy transient pixels onto the committed overlay");
 assertContains("main.ts", mainTs, "context.drawImage(surface.transientEl, 0, 0);", "transient promotion must preserve the finalized current-stroke pixels");
-assertContains("main.ts", mainTs, "this.strokePathCache.delete(this.currentStroke);\n\t\t\tthis.drawTransientPageAnnotations(pageNumber, true);", "stroke pointer-up must replace only the predicted current stroke with canonical geometry");
+assertContains("main.ts", mainTs, "this.strokePathCache.delete(this.currentStroke.id);\n\t\t\tthis.drawTransientPageAnnotations(pageNumber, true);", "stroke pointer-up must replace only the predicted current stroke with canonical geometry");
 assertContains("main.ts", mainTs, "private getCachedStrokeOutline(", "committed strokes must cache structured numeric geometry");
 assertNotContains("main.ts", mainTs, "new Path2D(", "native ink rendering must not depend on Electron SVG path parsing");
 assertContains("main.ts", mainTs, "A delayed preview must never", "stroke commit must preserve recorded samples that have not reached a preview frame");

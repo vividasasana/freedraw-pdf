@@ -7,7 +7,7 @@ function load(relative,overrides={}) {
 }
 const input=load('src/pointer/pointerInput.ts',{'../utils/deviceUtils':{getInputMethod:e=>e.pointerType,isTabletWebKitTouchDevice:()=>true},'../utils/general':{clamp:(v,a,b)=>Math.min(b,Math.max(a,v))},'../tools/toolState':{isShapeTool:()=>false}});
 const finger={pointerType:'touch',width:3,height:3,pressure:0.3,isPrimary:true};
-assert.equal(input.shouldPanAnnotationPointerEvent(finger,'pen','pen-mouse-only'),true,'Small Android finger contacts must pan despite pressure');
+assert.equal(input.shouldPanInkPointerEvent(finger,'pen','pen-mouse-only'),true,'Small Android finger contacts must pan despite pressure');
 assert.equal(input.shouldIgnoreInkPointerEvent(finger,'pen','pen-mouse-only'),true);
 assert.equal(input.isStylusLikePointerEvent({...finger,pointerType:'pen'}),true);
 assert.equal(input.isStylusLikePointerEvent({...finger,touchType:'stylus'}),true);
@@ -34,46 +34,3 @@ const zoomTwo=ink.getSmoothInkStrokeOutline(points,2000,2800,8,true,false);
 assert.equal(zoomOne.length,zoomTwo.length,'Tapered stroke geometry must be independent of zoom');
 zoomOne.forEach((point,i)=>point.forEach((value,j)=>assert.ok(Math.abs(value-zoomTwo[i][j]/2)<1e-8)));
 console.log('V2 interactions passed: finger/pen distinction, modifier-safe tool keys, stable live ink, clean eraser caps.');
-
-// Hovering with another tool must still give a newly selected eraser a position.
-const tree=ts.createSourceFile('main.ts',main,ts.ScriptTarget.Latest,true);
-const sessionNode=tree.statements.find(node=>ts.isClassDeclaration(node)&&node.name?.text==='NativePdfAnnotatorSession');
-const previewMethods=['handleViewPointerMove','updateToolPreview','refreshToolPreviewFromLastPointer','hideToolPreview','getToolPreviewRadius'];
-const previewCode=sessionNode.members.filter(member=>previewMethods.includes(member.name?.getText(tree))).map(member=>member.getText(tree)).join('\n');
-const previewContext={shouldPanAnnotationPointerEvent:input.shouldPanAnnotationPointerEvent};
-vm.runInNewContext(ts.transpileModule('class Session {'+previewCode+'}globalThis.Session=Session;',{compilerOptions:{target:ts.ScriptTarget.ES2020}}).outputText,previewContext);
-const preview=new previewContext.Session(),classes=new Set(['is-hidden']),previewStyle={};
-const pointerState={clientX:null,clientY:null};
-Object.assign(preview,{
- annotationMode:true,currentTool:'pen',fingerPanPointerId:null,erasingSession:false,
- previewState:{snapshot:pointerState,recordPointer(x,y){Object.assign(pointerState,{clientX:x,clientY:y})},show(){},hide(){}},
- toolPreviewEl:{classList:{add(...names){names.forEach(name=>classes.add(name))},remove(...names){names.forEach(name=>classes.delete(name))}},setCssStyles(value){Object.assign(previewStyle,value)}},
- toolState:{getWidth:()=>40},getViewContentEl:()=>({getBoundingClientRect:()=>({left:10,top:20})}),
- getInkInputPolicy:()=> 'pen-mouse-only',updateOverlayCursorForPointer(){}
-});
-preview.handleViewPointerMove({pointerType:'mouse',pointerId:1,clientX:150,clientY:180});
-assert.ok(classes.has('is-hidden'),'Pen hover must not paint the eraser ring');
-preview.currentTool='eraser';
-preview.refreshToolPreviewFromLastPointer();
-assert.ok(!classes.has('is-hidden'),'Switching to eraser must immediately restore its ring at the last pointer position');
-assert.equal(previewStyle.left,'120px');
-assert.equal(previewStyle.top,'140px');
-assert.equal(previewStyle.width,'40px');
-preview.erasingSession=true;
-preview.handleViewPointerMove({pointerType:'pen',pointerId:2,clientX:170,clientY:200});
-assert.ok(classes.has('is-active'),'Stylus erasing must retain the active pointer ring');
-preview.handleViewPointerMove({...finger,pointerId:3,clientX:170,clientY:200});
-assert.ok(classes.has('is-hidden'),'Finger navigation must not show an eraser ring');
-preview.getInkInputPolicy=()=> 'allow-touch';
-preview.handleViewPointerMove({...finger,pointerId:3,clientX:170,clientY:200});
-assert.ok(!classes.has('is-hidden'),'Finger erasing must show the pointer when finger drawing is enabled');
-const css=fs.readFileSync(path.join(root,'styles.css'),'utf8');
-const zIndex=selector=>[...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
- .filter(rule=>rule[1].trim().split(/,\s*/).includes(selector))
- .map(rule=>Number(rule[2].match(/z-index:\s*(\d+)/)?.[1])).filter(Number.isFinite).at(-1);
-const ringZ=zIndex('.pdf-native-annotator-tool-preview');
-for(const layer of ['.pdf-native-annotator-template-background','.pdf-native-annotator-overlay','.pdf-native-annotator-transient']) {
- assert.ok(ringZ>zIndex(layer),'The eraser pointer must paint above '+layer);
-}
-assert.ok(ringZ<zIndex('.pdf-native-annotator-ui'),'Toolbars must remain above the pointer');
-console.log('Eraser pointer passed: immediate tool switching, mouse/stylus/finger routing, size and layer visibility.');

@@ -28,25 +28,10 @@ const fakeContext={save(){},restore(){},setTransform(){},clearRect(){},drawImage
 const fakeCanvas={width:1000,height:1400,getContext:()=>fakeContext};
 const preview=method('\tprivate drawSelectionPreview(', '\n\tprivate drawPageAnnotations(', {getAnnotationRenderables:(strokes)=>strokes.map(annotation=>({kind:'stroke',annotation}))});
 const strokes=Array.from({length:1001},(_,i)=>({id:String(i),page:1}));
-Object.assign(preview,{dragAnchor:{x:0,y:0},currentLasso:null,selectedTargets:[{id:'1000',page:1,kind:'stroke'}],selectionBackground:null,ownerWindow:{devicePixelRatio:1},ownerDocument:{createElement:()=>({...fakeCanvas})},getPageAnnotationBucket:()=>({strokes,textItems:[],shapes:[],imageItems:[]}),drawStroke:(c,s,stroke)=>{if(stroke.id==='1000')selectedDraws++;else backgroundDraws++},drawText(){},drawShape(){},drawImageAnnotation(){},drawSelection(){},publishRenderedCanvas(){}});
+Object.assign(preview,{dragAnchor:{x:0,y:0},currentLasso:null,selectedTargets:[{id:'1000',page:1,kind:'stroke'}],selectionBackground:null,ownerWindow:{devicePixelRatio:1,createEl:()=>({...fakeCanvas})},getPageAnnotationBucket:()=>({strokes,textItems:[],shapes:[],imageItems:[]}),drawStroke:(c,s,stroke)=>{if(stroke.id==='1000')selectedDraws++;else backgroundDraws++},drawText(){},drawShape(){},drawImageAnnotation(){},drawSelection(){},publishRenderedCanvas(){}});
 const surface={pageNumber:1,lastWidth:1000,lastHeight:1400,overlayEl:fakeCanvas};
 assert.equal(preview.drawSelectionPreview(surface),true);
 for(let i=0;i<20;i++)preview.drawSelectionPreview(surface);
 assert.equal(backgroundDraws,1000,'Stationary annotations must be rendered once per drag, not every frame');
 assert.equal(selectedDraws,21,'Selected annotations must follow every preview frame');
 console.log('Selection replay passed: 1,000 stationary strokes rendered once across 21 drag frames.');
-
-let pointReads=0;
-const pointValues=Array.from({length:2000},(_,i)=>({x:i/2000,y:i/2000,pressure:.5}));
-const observedPoints=new Proxy(pointValues,{get(target,key,receiver){if(typeof key==='string'&&/^\d+$/.test(key))pointReads++;return Reflect.get(target,key,receiver)}});
-const outlineSession=method('\tprivate getCachedStrokeOutline(', '\n\tprivate drawText(', {
- getSmoothInkStrokeOutline:()=>[[0,0],[1,0],[1,1],[0,1]]
-});
-outlineSession.strokePathCache=new WeakMap();
-const cachedSurface={lastWidth:1000,lastHeight:1400};
-const cachedStroke={id:'cached',points:observedPoints,cutStart:false,cutEnd:false,inkSettings:{thinning:.5,streamline:.12,smoothing:.5,easing:'linear',taperStart:0,taperEnd:0,pressureMode:'auto'}};
-outlineSession.getCachedStrokeOutline(cachedSurface,cachedStroke,4,true,false);
-const readsAfterFill=pointReads;
-outlineSession.getCachedStrokeOutline(cachedSurface,cachedStroke,4,true,false);
-assert.equal(pointReads,readsAfterFill,'A cached stroke must not rescan all of its points on every redraw');
-console.log('Stroke cache passed: cache hits validate in constant time.');

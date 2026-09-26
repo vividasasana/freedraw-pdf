@@ -52,6 +52,8 @@ export const TEXT_FONT_FAMILIES = [
 	"Courier New"
 ];
 
+export const TEXT_FONT_SIZES = [12, 14, 16, 18, 20, 24, 28, 32, 40, 48];
+
 export const TEXT_COLOR_PRESETS = [
 	{ color: "#202124", label: "Black" },
 	{ color: "#ff6b57", label: "Coral" },
