@@ -3,7 +3,7 @@ const root=path.resolve(__dirname,'..');
 function load(relative,overrides={}) {
  const module={exports:{}};
  const code=ts.transpileModule(fs.readFileSync(path.join(root,relative),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText;
- vm.runInNewContext(code,{module,exports:module.exports,require:n=>overrides[n]??require(n),console,performance,Map,Set},{filename:relative});return module.exports;
+ vm.runInNewContext(code,{module,exports:module.exports,require:n=>overrides[n]??(n.startsWith('.')?load(path.relative(root,path.resolve(root,path.dirname(relative),n+'.ts')),overrides):require(n)),console,performance,Map,Set},{filename:relative});return module.exports;
 }
 const input=load('src/pointer/pointerInput.ts',{'../utils/deviceUtils':{getInputMethod:e=>e.pointerType,isTabletWebKitTouchDevice:()=>true},'../utils/general':{clamp:(v,a,b)=>Math.min(b,Math.max(a,v))},'../tools/toolState':{isShapeTool:()=>false}});
 const finger={pointerType:'touch',width:3,height:3,pressure:0.3,isPrimary:true};

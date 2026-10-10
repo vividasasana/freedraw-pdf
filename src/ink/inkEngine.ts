@@ -1,4 +1,6 @@
 import { getStroke } from "perfect-freehand";
+import { buildRoundedInkGeometry, type RoundedInkGeometry } from "./roundedInkGeometry";
+import { buildContinuousInkGeometry } from "./continuousInkGeometry";
 import type { InkEasingMode, InkRenderSettings } from "../types";
 
 export interface InkPoint {
@@ -9,13 +11,17 @@ export interface InkPoint {
 }
 
 export interface InkStroke {
+	inkSettings?: InkRenderSettings;
 	widthScale?: number;
 	points: InkPoint[];
 }
 
 export interface InkRenderOptions {
+	/** Canvas consumers can skip building an unused SVG path without changing ink geometry. */
+	serializePath?: boolean;
 	inkSettings?: InkRenderSettings;
 	renderMode?: "live" | "committed";
+	previewQuality?: "fast";
 	predictionStrength?: number;
 	startTaper?: number;
 	endTaper?: number;
@@ -29,6 +35,7 @@ export interface InkAppendOptions {
 }
 
 export type InkStrokeOutline = number[][];
+export type InkDrawingContext = Pick<CanvasRenderingContext2D, "beginPath" | "moveTo" | "lineTo" | "quadraticCurveTo" | "arc" | "closePath" | "fill" | "stroke" | "lineWidth">;
 
 const INK_MAX_SMOOTHING_WINDOW_MS = 100;
 const INK_OUTPUT_RATE_HZ = 180;
@@ -46,8 +53,19 @@ const INK_CENTERLINE_SMOOTHING_PASSES = 1;
 const INK_PRESSURE_GAIN = 1.25;
 const INK_PRESSURE_SLEW_PER_WIDTH = 0.3;
 const INK_PRESSURE_SMOOTHING_ALPHA = 0.4;
+const GENTLE_PRESSURE_SMOOTHING_ALPHA = 0.3;
+const GENTLE_PRESSURE_SLEW_PER_WIDTH = 0.12;
+const GENTLE_PRESSURE_MIN_STEP = 0.004;
+const GENTLE_PRESSURE_MAX_STEP = 0.08;
 
 const DEFAULT_INK_RENDER_SETTINGS: InkRenderSettings = {
+	inkModel: "continuous-v1",
+	smoothingMode: "pressure",
+	pressureResponse: "gentle",
+	strokeGeometry: "round",
+	edgeGeometryVersion: 2,
+	widthSmoothing: "extra-smooth",
+	widthSmoothingVersion: 2,
 	thinning: 0.5,
 	streamline: 0.12,
 	smoothing: 0.5,
@@ -61,6 +79,13 @@ let activeInkRenderSettings: InkRenderSettings = { ...DEFAULT_INK_RENDER_SETTING
 
 export function setInkRenderSettings(settings: Partial<InkRenderSettings> | null | undefined): void {
 	activeInkRenderSettings = {
+		...(settings?.inkModel === "continuous-v1" || !settings ? { inkModel: "continuous-v1" as const } : {}),
+		...(settings?.smoothingMode === "pressure" || !settings ? { smoothingMode: "pressure" as const } : {}),
+		...(settings?.smoothingMode === "pressure" && settings.pressureResponse === "gentle" || !settings ? { pressureResponse: "gentle" as const } : {}),
+		...(settings?.strokeGeometry === "round" || !settings ? { strokeGeometry: "round" as const } : {}),
+		...(settings?.edgeGeometryVersion === 2 || !settings ? { edgeGeometryVersion: 2 as const } : {}),
+		...(settings?.widthSmoothing === "original" || settings?.widthSmoothing === "extra-smooth" ? { widthSmoothing: settings.widthSmoothing } : !settings ? { widthSmoothing: "extra-smooth" as const } : {}),
+		...(settings?.widthSmoothingVersion === 2 || !settings ? { widthSmoothingVersion: 2 as const } : {}),
 		thinning: clamp(settings?.thinning ?? DEFAULT_INK_RENDER_SETTINGS.thinning, -1, 1),
 		streamline: clamp(settings?.streamline ?? DEFAULT_INK_RENDER_SETTINGS.streamline, 0, 1),
 		smoothing: clamp(settings?.smoothing ?? DEFAULT_INK_RENDER_SETTINGS.smoothing, 0, 1),
@@ -115,35 +140,44 @@ export function appendStrokePoints<TPoint extends InkPoint, TStroke extends InkS
 	options: InkAppendOptions = {}
 ): boolean {
 	let appended = false;
+	const pressureGain = stroke.inkSettings?.smoothingMode === "pressure" ? 1 : INK_PRESSURE_GAIN;
+	const gentle = stroke.inkSettings?.smoothingMode === "pressure" && stroke.inkSettings.pressureResponse === "gentle";
+	const rounded = stroke.inkSettings?.strokeGeometry === "round";
 	for (const sample of points) {
 		const previousPoint = stroke.points[stroke.points.length - 1];
+		if (!Number.isFinite(sample.x) || !Number.isFinite(sample.y) || !Number.isFinite(sample.pressure)) {
+			continue;
+		}
+		if (previousPoint && typeof previousPoint.t === "number" && typeof sample.t === "number" && sample.t < previousPoint.t) {
+			continue;
+		}
 		const threshold = getStrokeSampleThreshold(stroke.widthScale, options.mergeThreshold);
-		if (previousPoint && distanceBetween(previousPoint, sample) < threshold && !options.forceCommitFinalPoint) {
-			const pressure = getNextStrokePressure(previousPoint.pressure, sample.pressure, previousPoint, sample, stroke.widthScale);
+		// Measure from the last fixed anchor as well as the mutable tail. Otherwise
+		// a stream of small steps keeps replacing the tail and erases whole curves.
+		const anchor = stroke.points[stroke.points.length - 2];
+		if (anchor && previousPoint && distanceBetween(anchor, sample) < threshold && distanceBetween(previousPoint, sample) < threshold && !options.forceCommitFinalPoint && (!rounded || Math.abs(previousPoint.pressure - sample.pressure) < .005)) {
+			const pressure = rounded ? clamp(sample.pressure, .06, 1) : getNextStrokePressure(previousPoint.pressure, sample.pressure, previousPoint, sample, stroke.widthScale, pressureGain, gentle);
 			stroke.points[stroke.points.length - 1] = { ...sample, pressure };
 			appended = true;
 			continue;
 		}
-		const pressure = previousPoint
-			? getNextStrokePressure(previousPoint.pressure, sample.pressure, previousPoint, sample, stroke.widthScale)
-			: clamp(sample.pressure * INK_PRESSURE_GAIN, 0.12, 0.88);
-		if (previousPoint && options.forceCommitFinalPoint) {
-			stroke.points[stroke.points.length - 1] = { ...sample, pressure: Math.max(previousPoint.pressure, pressure) };
-			appended = true;
-			continue;
-		}
+		const pressure = rounded ? clamp(sample.pressure, .06, 1) : previousPoint
+			? getNextStrokePressure(previousPoint.pressure, sample.pressure, previousPoint, sample, stroke.widthScale, pressureGain, gentle)
+			: clamp(sample.pressure * pressureGain, 0.12, 0.88);
 		stroke.points.push({ ...sample, pressure });
 		appended = true;
 	}
 	return appended;
 }
 
-function getNextStrokePressure(previousPressure: number, samplePressure: number, previousPoint: InkPoint, sample: InkPoint, strokeWidthScale?: number): number {
-	const target = clamp(samplePressure * INK_PRESSURE_GAIN, 0.08, 1);
-	const smoothed = previousPressure + ((target - previousPressure) * INK_PRESSURE_SMOOTHING_ALPHA);
+function getNextStrokePressure(previousPressure: number, samplePressure: number, previousPoint: InkPoint, sample: InkPoint, strokeWidthScale?: number, pressureGain = INK_PRESSURE_GAIN, gentle = false): number {
+	const target = clamp(samplePressure * pressureGain, 0.08, 1);
+	const smoothed = previousPressure + ((target - previousPressure) * (gentle ? GENTLE_PRESSURE_SMOOTHING_ALPHA : INK_PRESSURE_SMOOTHING_ALPHA));
 	const width = Math.max(strokeWidthScale ?? 0.0025, 0.0008);
 	const travel = distanceBetween(previousPoint, sample);
-	const maxDelta = clamp(INK_PRESSURE_SLEW_PER_WIDTH * (travel / width), 0.015, 0.18);
+	const maxDelta = gentle
+		? clamp(GENTLE_PRESSURE_SLEW_PER_WIDTH * (travel / width), GENTLE_PRESSURE_MIN_STEP, GENTLE_PRESSURE_MAX_STEP)
+		: clamp(INK_PRESSURE_SLEW_PER_WIDTH * (travel / width), 0.015, 0.18);
 	return clamp(smoothed, Math.max(0.08, previousPressure - maxDelta), Math.min(1, previousPressure + maxDelta));
 }
 
@@ -320,9 +354,14 @@ function getStrokeTaperMultiplier(
 	return clamp(edgeDistance / taperLength, INK_TAPER_MIN_MULTIPLIER, 1);
 }
 
-function getVisualPressureMultiplier(pressure: number, usePressure: boolean): number {
+function getVisualPressureMultiplier(pressure: number, usePressure: boolean, settings = activeInkRenderSettings): number {
 	if (!usePressure) {
 		return 1;
+	}
+	if (settings.smoothingMode === "pressure") {
+		if (settings.thinning === 0) { return 1; }
+		const radius = 0.5 - settings.thinning * (0.5 - getResponsiveInkPressure(pressure, settings));
+		return Math.max(0.02, 2 * getEasingFunction(settings.easing)(radius));
 	}
 	return clamp(1 + (clamp(pressure, 0.06, 1) - 0.5) * INK_PRESSURE_WIDTH_VARIATION, 0.9, 1.09);
 }
@@ -394,6 +433,20 @@ function average(first: number, second: number): number {
 	return (first + second) / 2;
 }
 
+function getResponsiveInkPressure(pressure: number, settings: InkRenderSettings): number {
+	if (settings.smoothingMode !== "pressure") { return clamp(pressure, 0.12, 1); }
+	const captured = clamp(pressure, 0.06, 1);
+	if (settings.pressureResponse === "gentle") {
+		// A smooth, bounded response avoids bulbous heads when contact pressure is
+		// very light or changes abruptly. Higher smoothing still gives more response.
+		const range = settings.easing === "linear" ? 0.12 : 0.06;
+		const gain = 0.55 + 0.45 * settings.smoothing;
+		return 0.5 + range * Math.tanh((captured - 0.5) * gain / range);
+	}
+	// Amplify deviations in both directions without shifting the neutral width.
+	return clamp(0.5 + (captured - 0.5) * (1 + settings.smoothing), 0.06, 1);
+}
+
 function getRenderStrokePoints(points: InkPoint[], predictTail: boolean, predictionStrength = 1, settings = activeInkRenderSettings): InkPoint[] {
 	const inputPoints = predictTail ? getPredictedStrokePoints(points, predictionStrength) : points;
 	const stabilization = settings.streamline;
@@ -431,6 +484,8 @@ export function getSmoothInkStrokeOutline(
 	predictTail: boolean,
 	options: InkRenderOptions = {}
 ): InkStrokeOutline | null {
+	// The round renderer uses a union of pieces rather than a single capped outline.
+	if ((options.inkSettings ?? activeInkRenderSettings).strokeGeometry === "round") { return null; }
 	try {
 		const renderMode = options.renderMode ?? (predictTail ? "live" : "committed");
 		void renderMode;
@@ -448,11 +503,12 @@ export function getSmoothInkStrokeOutline(
 		const easing = getEasingFunction(settings.easing);
 		const geometryScale = 1524 / Math.max(1, width);
 		const outline = getStroke(
-			renderPoints.map((point) => [point.x * width * geometryScale, point.y * height * geometryScale, effectiveUsePressure ? clamp(point.pressure, 0.12, 1) : 0.5]),
+			renderPoints.map((point) => [point.x * width * geometryScale, point.y * height * geometryScale, effectiveUsePressure ? getResponsiveInkPressure(point.pressure, settings) : 0.5]),
 			{
 				size: Math.max(1, baseWidth * geometryScale),
 				thinning: settings.thinning,
-				smoothing: settings.smoothing,
+				// Pressure response must not remove contour points at direction changes.
+				smoothing: settings.smoothingMode === "pressure" ? 0 : settings.smoothing,
 				streamline: settings.streamline,
 				easing,
 				simulatePressure: false,
@@ -488,6 +544,9 @@ export function getSmoothInkStrokePath(
 	predictTail: boolean,
 	options: InkRenderOptions = {}
 ): string | null {
+	if ((options.inkSettings ?? activeInkRenderSettings).strokeGeometry === "round") {
+		return getRoundedInkPath(getRoundedInkStrokeGeometry(points, width, height, baseWidth, usePressure, predictTail, options));
+	}
 	const outline = getSmoothInkStrokeOutline(points, width, height, baseWidth, usePressure, predictTail, options);
 	if (!outline) {
 		return null;
@@ -496,7 +555,55 @@ export function getSmoothInkStrokePath(
 	return pathData || null;
 }
 
-export function fillInkStrokeOutline(context: CanvasRenderingContext2D, outline: InkStrokeOutline): boolean {
+export function getRoundedInkStrokeGeometry(points: InkPoint[], width: number, height: number, baseWidth: number, usePressure: boolean, predictTail = false, options: InkRenderOptions = {}): RoundedInkGeometry {
+	const settings = options.inkSettings ?? activeInkRenderSettings;
+	if (settings.inkModel === "continuous-v1") {
+		// Fit recorded input only. A synthetic tail would alter the preceding
+		// curve and its pressure when the Pencil lifts and prediction is removed.
+		return buildContinuousInkGeometry(points, width, height, baseWidth, usePressure, settings, options);
+	}
+	const input = predictTail ? getPredictedStrokePoints(points, options.predictionStrength) : points;
+	const stable = settings.streamline > 0 ? getSmoothedStrokePoints(input, settings.streamline) : input;
+	// Stabilization may move the path, but must never average away a pressure peak.
+	const prepared = stable.map((p, i) => ({ ...p, pressure: input[i].pressure }));
+	return buildRoundedInkGeometry(prepared, width, height, baseWidth, usePressure, settings, options);
+}
+
+function fillRoundedInkGeometry(context: InkDrawingContext, geometry: RoundedInkGeometry): void {
+	context.beginPath();
+	for (const piece of geometry.pieces) {
+		if (piece.kind === "tube") {
+			const { a, b, leftAngle, rightAngle } = piece;
+			context.moveTo(a.x + Math.cos(leftAngle) * a.radius, a.y + Math.sin(leftAngle) * a.radius);
+			context.lineTo(b.x + Math.cos(leftAngle) * b.radius, b.y + Math.sin(leftAngle) * b.radius);
+			if (piece.endCap) context.arc(b.x, b.y, b.radius, leftAngle, rightAngle, true);
+			else context.lineTo(b.x + Math.cos(rightAngle) * b.radius, b.y + Math.sin(rightAngle) * b.radius);
+			context.lineTo(a.x + Math.cos(rightAngle) * a.radius, a.y + Math.sin(rightAngle) * a.radius);
+			if (piece.startCap) context.arc(a.x, a.y, a.radius, rightAngle, leftAngle, true);
+		} else if (piece.kind === "polygon") {
+			context.moveTo(piece.points[0][0], piece.points[0][1]);
+			for (let i = 1; i < piece.points.length; i++) context.lineTo(piece.points[i][0], piece.points[i][1]);
+		} else {
+			context.moveTo(piece.x + piece.radius, piece.y);
+			context.arc(piece.x, piece.y, piece.radius, 0, -Math.PI * 2, true);
+		}
+		context.closePath();
+	}
+	context.fill();
+}
+
+function getRoundedInkPath(geometry: RoundedInkGeometry): string | null {
+	if (!geometry.pieces.length) return null;
+	return geometry.pieces.map(piece => piece.kind === "tube" ? (() => {
+		const {a,b,leftAngle:l,rightAngle:r,frontArc} = piece;
+		const point = (p: typeof a, angle: number) => `${p.x + Math.cos(angle) * p.radius},${p.y + Math.sin(angle) * p.radius}`;
+		return `M${point(a,l)} L${point(b,l)} ${piece.endCap ? `A${b.radius},${b.radius} 0 ${frontArc > Math.PI ? 1 : 0} 0` : "L"} ${point(b,r)} L${point(a,r)} ${piece.startCap ? `A${a.radius},${a.radius} 0 ${frontArc < Math.PI ? 1 : 0} 0` : "L"} ${point(a,l)} Z`;
+	})() : piece.kind === "polygon"
+		? `M${piece.points[0].join(",")} L${piece.points.slice(1).map(p => p.join(",")).join(" ")} Z`
+		: `M${piece.x + piece.radius},${piece.y} A${piece.radius},${piece.radius} 0 1 0 ${piece.x - piece.radius},${piece.y} A${piece.radius},${piece.radius} 0 1 0 ${piece.x + piece.radius},${piece.y} Z`).join(" ");
+}
+
+export function fillInkStrokeOutline(context: InkDrawingContext, outline: InkStrokeOutline): boolean {
 	if (outline.length < 4) {
 		return false;
 	}
@@ -526,25 +633,8 @@ export function fillInkStrokeOutline(context: CanvasRenderingContext2D, outline:
 	return true;
 }
 
-function drawFreehandOutlineStroke(
-	context: CanvasRenderingContext2D,
-	points: InkPoint[],
-	width: number,
-	height: number,
-	baseWidth: number,
-	usePressure: boolean,
-	predictTail: boolean,
-	options: InkRenderOptions = {}
-): string | null {
-	const outline = getSmoothInkStrokeOutline(points, width, height, baseWidth, usePressure, predictTail, options);
-	if (!outline || !fillInkStrokeOutline(context, outline)) {
-		return null;
-	}
-	return getSvgPathFromStroke(outline) || null;
-}
-
 function drawUniformSmoothStroke(
-	context: CanvasRenderingContext2D,
+	context: InkDrawingContext,
 	points: InkPoint[],
 	width: number,
 	height: number,
@@ -561,9 +651,9 @@ function drawUniformSmoothStroke(
 		return false;
 	}
 	const averagePressure = usePressure
-		? clamp(renderPoints.reduce((sum, point) => sum + point.pressure, 0) / renderPoints.length, 0.28, 1)
+		? clamp(renderPoints.reduce((sum, point) => sum + point.pressure, 0) / renderPoints.length, settings.smoothingMode === "pressure" ? 0.06 : 0.28, 1)
 		: 1;
-	context.lineWidth = Math.max(0.85, baseWidth * getVisualPressureMultiplier(averagePressure, usePressure));
+	context.lineWidth = Math.max(0.85, baseWidth * getVisualPressureMultiplier(averagePressure, usePressure, settings));
 	context.beginPath();
 	context.moveTo(renderPoints[0].x * width, renderPoints[0].y * height);
 	for (let index = 1; index < renderPoints.length - 1; index += 1) {
@@ -583,7 +673,7 @@ function drawUniformSmoothStroke(
 }
 
 export function drawSmoothInkStroke(
-	context: CanvasRenderingContext2D,
+	context: InkDrawingContext,
 	points: InkPoint[],
 	width: number,
 	height: number,
@@ -595,10 +685,16 @@ export function drawSmoothInkStroke(
 	if (points.length === 0) {
 		return null;
 	}
+	if ((options.inkSettings ?? activeInkRenderSettings).strokeGeometry === "round") {
+		const geometry = getRoundedInkStrokeGeometry(points, width, height, baseWidth, usePressure, predictTail, options);
+		fillRoundedInkGeometry(context, geometry);
+		return options.serializePath === false ? null : getRoundedInkPath(geometry);
+	}
 	const renderMode = options.renderMode ?? (predictTail ? "live" : "committed");
-	const pathData = drawFreehandOutlineStroke(context, points, width, height, baseWidth, usePressure, predictTail, { ...options, renderMode });
-	if (pathData) {
-		return pathData;
+	const settings = options.inkSettings ?? activeInkRenderSettings;
+	const outline = getSmoothInkStrokeOutline(points, width, height, baseWidth, usePressure, predictTail, { ...options, renderMode });
+	if (outline && fillInkStrokeOutline(context, outline)) {
+		return options.serializePath === false ? null : getSvgPathFromStroke(outline) || null;
 	}
 	if ((renderMode === "live" || predictTail || !usePressure) && drawUniformSmoothStroke(context, points, width, height, baseWidth, usePressure, predictTail, renderMode, options.predictionStrength, options.inkSettings)) {
 		return null;
@@ -607,8 +703,8 @@ export function drawSmoothInkStroke(
 	const cumulativeDistances = getCumulativeStrokeDistances(renderPoints);
 	const first = renderPoints[0];
 	if (renderPoints.length === 1) {
-		const pressure = usePressure ? clamp(first.pressure, 0.2, 1) : 1;
-		context.lineWidth = Math.max(0.85, baseWidth * getVisualPressureMultiplier(pressure, usePressure));
+		const pressure = usePressure ? clamp(first.pressure, settings.smoothingMode === "pressure" ? 0.06 : 0.2, 1) : 1;
+		context.lineWidth = Math.max(0.85, baseWidth * getVisualPressureMultiplier(pressure, usePressure, settings));
 		context.beginPath();
 		context.moveTo(first.x * width, first.y * height);
 		context.lineTo((first.x + 0.0001) * width, (first.y + 0.0001) * height);
@@ -617,8 +713,8 @@ export function drawSmoothInkStroke(
 	}
 	if (renderPoints.length === 2) {
 		const second = renderPoints[1];
-		const pressure = usePressure ? clamp((first.pressure + second.pressure) / 2, 0.2, 1) : 1;
-		context.lineWidth = Math.max(0.85, baseWidth * getVisualPressureMultiplier(pressure, usePressure));
+		const pressure = usePressure ? clamp((first.pressure + second.pressure) / 2, settings.smoothingMode === "pressure" ? 0.06 : 0.2, 1) : 1;
+		context.lineWidth = Math.max(0.85, baseWidth * getVisualPressureMultiplier(pressure, usePressure, settings));
 		context.beginPath();
 		context.moveTo(first.x * width, first.y * height);
 		context.lineTo(second.x * width, second.y * height);
@@ -631,10 +727,10 @@ export function drawSmoothInkStroke(
 		const controlPoint = renderPoints[index];
 		const nextAnchor = getStrokeMidpoint(controlPoint, renderPoints[index + 1]);
 		const pressure = usePressure
-			? clamp((previousAnchor.pressure + controlPoint.pressure + nextAnchor.pressure) / 3, 0.2, 1)
+			? clamp((previousAnchor.pressure + controlPoint.pressure + nextAnchor.pressure) / 3, settings.smoothingMode === "pressure" ? 0.06 : 0.2, 1)
 			: 1;
 		const taper = getStrokeTaperMultiplier(cumulativeDistances, index, usePressure);
-		context.lineWidth = Math.max(0.85, baseWidth * getVisualPressureMultiplier(pressure, usePressure) * taper);
+		context.lineWidth = Math.max(0.85, baseWidth * getVisualPressureMultiplier(pressure, usePressure, settings) * taper);
 		context.beginPath();
 		context.moveTo(previousAnchor.x * width, previousAnchor.y * height);
 		context.quadraticCurveTo(
@@ -648,9 +744,9 @@ export function drawSmoothInkStroke(
 	}
 
 	const last = renderPoints[renderPoints.length - 1];
-	const pressure = usePressure ? clamp((previousAnchor.pressure + last.pressure) / 2, 0.2, 1) : 1;
+	const pressure = usePressure ? clamp((previousAnchor.pressure + last.pressure) / 2, settings.smoothingMode === "pressure" ? 0.06 : 0.2, 1) : 1;
 	const taper = getStrokeTaperMultiplier(cumulativeDistances, renderPoints.length - 1, usePressure);
-	context.lineWidth = Math.max(0.85, baseWidth * getVisualPressureMultiplier(pressure, usePressure) * taper);
+	context.lineWidth = Math.max(0.85, baseWidth * getVisualPressureMultiplier(pressure, usePressure, settings) * taper);
 	context.beginPath();
 	context.moveTo(previousAnchor.x * width, previousAnchor.y * height);
 	context.lineTo(last.x * width, last.y * height);

@@ -7,7 +7,7 @@ export type EraserMode = "object" | "segment";
 export type SelectionMode = "single" | "box" | "lasso";
 export type ToolPresetKind = "pen" | "highlighter" | "eraser";
 export type InkInputPolicy = "pen-mouse-stylus-touch" | "pen-mouse-only" | "allow-touch";
-export type LivePreviewMode = "accurate" | "balanced" | "smooth";
+export type LivePreviewMode = "fast" | "accurate" | "auto-smooth";
 export type InkPressureMode = "auto" | "simulate" | "stylus";
 export type InkEasingMode = "linear" | "ease-in" | "ease-out" | "ease-in-out";
 export type TextFontWeight = "normal" | "bold";
@@ -16,6 +16,20 @@ export type TextAlignment = "left" | "center" | "right";
 export type TextVerticalAlignment = "top" | "middle" | "bottom";
 
 export interface InkRenderSettings {
+	/** Stored per stroke; earlier ink retains its recorded rendering pipeline. */
+	inkModel?: "continuous-v1";
+	/** Missing on older strokes, whose smoothing retains its original edge-rounding meaning. */
+	smoothingMode?: "pressure";
+	/** Stored per stroke so gentler tuning does not change older saved ink. */
+	pressureResponse?: "gentle";
+	/** Rounded connected geometry and peak-preserving width transitions. */
+	strokeGeometry?: "round";
+	/** Tangent connections avoid hard edges where neighbouring radii differ. */
+	edgeGeometryVersion?: 2;
+	/** Missing on older ink; stored per stroke to preserve its original width response. */
+	widthSmoothing?: "original" | "extra-smooth";
+	/** Local pressure tracking replaces the first Extra smooth peak-lifting response. */
+	widthSmoothingVersion?: 2;
 	thinning: number;
 	streamline: number;
 	smoothing: number;
@@ -58,6 +72,7 @@ export interface PreviewStateSnapshot {
 }
 
 export interface PDFAnnotatorSettings {
+	quickAddPageSettings: QuickAddPageSettings;
 	pressureCaptureVersion: number;
 	toolDefaults: ToolStateSnapshot;
 	presets: ToolPreset[];
@@ -165,6 +180,12 @@ export interface AnnotationClipboardPayload {
 }
 
 export type NotebookTemplate = "blank" | "ruled" | "grid" | "dot";
+
+export interface QuickAddPageSettings {
+	source: "previous" | "defaults";
+	template: NotebookTemplate;
+	paperColor: string;
+}
 export type NotebookPageSize = "a4" | "letter" | "compact" | "long";
 export type NotebookPageKind = "template" | "pdf";
 
@@ -306,6 +327,7 @@ export interface PageSurface {
 	hostEl: HTMLElement;
 	overlayEl: HTMLCanvasElement;
 	transientEl: HTMLCanvasElement;
+	vectorEl?: SVGSVGElement;
 	lastWidth: number;
 	lastHeight: number;
 	pendingWidth: number;

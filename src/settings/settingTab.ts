@@ -9,6 +9,8 @@ type SettingDefinitionCompat = {
 };
 
 export interface PDFAnnotatorSettingsHost {
+	cleanAnnotationFiles(removeOrphans: boolean): Promise<void>;
+	restoreActiveAnnotationData(): Promise<void>;
 	getInlineToolbarPreference(): boolean;
 	shouldShowRegionToolbarButton(): boolean;
 	shouldShowCopyEmbedToolbarButton(): boolean;
@@ -19,21 +21,25 @@ export interface PDFAnnotatorSettingsHost {
 	getInkInputPolicy(): InkInputPolicy;
 	getLivePreviewMode(): LivePreviewMode;
 	getInkRenderSettings(): InkRenderSettings;
+	getQuickAddPageSettings(): PDFAnnotatorSettings["quickAddPageSettings"];
 	getAutosaveDelayMs(): number;
 	getToolDefaults(): ToolStateSnapshot;
 	getStoredPresets(): ToolPreset[];
 	updateBehaviorSettings(
-		nextSettings: Partial<Pick<PDFAnnotatorSettings, "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "autoCopyRegionEmbed" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "autosaveDelayMs">>
+		nextSettings: Partial<Pick<PDFAnnotatorSettings, "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "autoCopyRegionEmbed" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "quickAddPageSettings" | "autosaveDelayMs">>
 	): Promise<void>;
 	updateToolPreferences(snapshot: ToolStateSnapshot, presets: ToolPreset[]): void;
 }
 
 export class PDFAnnotatorSettingTab extends PluginSettingTab {
+	private quickAddDefaultsEl: HTMLElement | null = null;
 	constructor(app: App, private readonly plugin: Plugin & PDFAnnotatorSettingsHost) {
 		super(app, plugin);
 	}
 
-	getSettingDefinitions(): SettingDefinitionCompat[] {
+	// Keep these rows internal: getSettingDefinitions is an Obsidian rendering
+	// hook that can bypass display() and flatten the section layout.
+	private buildSettingRows(): SettingDefinitionCompat[] {
 		return [
 			{
 				name: "Toolbar placement",
@@ -119,11 +125,11 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 			},
 			{
 				name: "Action notices",
-				desc: "Show brief confirmations after drawing, undo, and redo actions.",
+				desc: "Show brief notices for drawing, saving, undo, and redo. Save failures are always shown.",
 				render: (setting) => {
 					setting
 						.setName("Action notices")
-						.setDesc("Show brief confirmations after drawing, undo, and redo actions.")
+						.setDesc("Show brief notices for drawing, saving, undo, and redo. Save failures are always shown.")
 						.addToggle((toggle) => {
 							toggle
 								.setValue(this.plugin.shouldShowDrawingNotices())
@@ -169,16 +175,16 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 			},
 			{
 				name: "Stroke preview",
-				desc: "Balance an exact match to the saved stroke against a smoother, more responsive tip. Pressure rendering stays enabled in every mode.",
+				desc: "Choose a fast preview, an accurate preview, or automatic smoothing. Pencil pressure stays enabled in every mode.",
 				render: (setting) => {
 					setting
 						.setName("Stroke preview")
-						.setDesc("Balance an exact match to the saved stroke against a smoother, more responsive tip. Pressure rendering stays enabled in every mode.")
+						.setDesc("Fast uses fewer curve subdivisions while writing. Accurate matches saved geometry. Smoothest uses the automatic smoothing mode. New ink follows measured Pencil contact with continuous curves; older ink retains adaptive tip prediction. Pencil pressure stays enabled.")
 						.addDropdown((dropdown) => {
 							dropdown
-								.addOption("accurate", "Closest to saved")
-								.addOption("balanced", "Balanced")
-								.addOption("smooth", "Smoothest")
+								.addOption("fast", "Fast")
+								.addOption("accurate", "Accurate")
+								.addOption("auto-smooth", "Smoothest")
 								.setValue(this.plugin.getLivePreviewMode())
 								.onChange(async (value) => {
 									await this.plugin.updateBehaviorSettings({ livePreviewMode: value as LivePreviewMode });
@@ -187,6 +193,7 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 				}
 			},
 			...this.getInkSettingDefinitions(),
+			...this.getQuickAddPageSettingDefinitions(),
 			...this.getDefaultToolSettingDefinitions()
 		];
 	}
@@ -203,15 +210,15 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 		return [
 			{
 				name: "Pressure input",
-				desc: "Applies to new strokes only. Use drawing speed or pressure reported by an active stylus.",
+				desc: "Pens always use reported pressure. Choose how mouse and finger pressure is handled for new strokes.",
 				render: (setting) => {
 					setting
 						.setName("Pressure input")
-						.setDesc("Applies to new strokes only. Use drawing speed or pressure reported by an active stylus.")
+						.setDesc("Pens always use reported pressure, retaining the last pressure if unavailable. Drawing speed applies only to mouse and finger input. Applies to new strokes.")
 						.addDropdown((dropdown) => {
 							dropdown
 								.addOption("auto", "Automatic")
-								.addOption("simulate", "Drawing speed")
+								.addOption("simulate", "Drawing speed (mouse / finger)")
 								.addOption("stylus", "Stylus pressure")
 								.setValue(this.plugin.getInkRenderSettings().pressureMode)
 								.onChange(async (value) => {
@@ -225,11 +232,11 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 				desc: "How strongly pressure changes line width. Higher values produce more variation.",
 				render: (setting) => {
 					setting
-						.setName("Stroke width response")
-						.setDesc("How strongly pressure changes line width. Higher values produce more variation.")
+						.setName("Pressure sensitivity")
+						.setDesc("0 keeps a constant width. Higher values make firmer Pencil pressure increase width more strongly. Applies to new strokes.")
 						.addSlider((slider) => {
 							slider
-								.setLimits(-1, 1, 0.05)
+								.setLimits(0, 1, 0.05)
 								.setValue(this.plugin.getInkRenderSettings().thinning)
 								.setDynamicTooltip()
 								.onChange(async (value) => {
@@ -257,12 +264,28 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 				}
 			},
 			{
+				name: "Width smoothing mode",
+				desc: "Extra smooth gently blends nearby pressure changes while following your Pencil pressure.",
+				render: (setting) => {
+					setting.setName("Width smoothing mode")
+						.setDesc("Extra smooth follows Pencil pressure with a small local blend to soften sudden width changes. Applies to new strokes.")
+						.addDropdown((dropdown) => {
+							dropdown.addOption("original", "Original")
+								.addOption("extra-smooth", "Extra smooth")
+								.setValue(this.plugin.getInkRenderSettings().widthSmoothing ?? "extra-smooth")
+								.onChange(async (value) => {
+									await updateInkRenderSettings({ widthSmoothing: value === "original" ? "original" : "extra-smooth" });
+								});
+						});
+				}
+			},
+			{
 				name: "Stroke smoothing",
-				desc: "Round sharp changes in the freehand outline.",
+				desc: "Round corners and soften neighbouring width transitions. Applies to new strokes.",
 				render: (setting) => {
 					setting
 						.setName("Stroke smoothing")
-						.setDesc("Round sharp changes in the freehand outline.")
+						.setDesc("Higher values round corners more and soften width transitions. Extra smooth keeps pressure changes local; Original preserves peak widths. Applies to new strokes; stabilization controls hand wobble.")
 						.addSlider((slider) => {
 							slider
 								.setLimits(0, 1, 0.05)
@@ -322,6 +345,25 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 						});
 				}
 			}
+		];
+	}
+
+	private getQuickAddPageSettingDefinitions(): SettingDefinitionCompat[] {
+		const update = async (patch: Partial<PDFAnnotatorSettings["quickAddPageSettings"]>) => {
+			await this.plugin.updateBehaviorSettings({ quickAddPageSettings: { ...this.plugin.getQuickAddPageSettings(), ...patch } });
+		};
+		return [
+			{ name: "Quick-add style source", render: setting => setting.setName("Quick-add style source")
+				.setDesc("Copy the previous temporary page's template and colour in this PDF, or choose Configured defaults to set them. With no temporary page yet, your saved defaults are used.")
+				.addDropdown(dropdown => dropdown.addOption("previous", "Previous temporary page").addOption("defaults", "Configured defaults")
+					.setValue(this.plugin.getQuickAddPageSettings().source).onChange(async value => { await update({ source: value === "defaults" ? "defaults" : "previous" }); this.syncQuickAddDefaultFields(); })) },
+			{ name: "Quick-add template", render: setting => setting.setName("Default template")
+				.setDesc("Template for configured defaults, or when this PDF has no previous temporary page.")
+				.addDropdown(dropdown => dropdown.addOption("blank", "Blank").addOption("ruled", "Ruled").addOption("grid", "Grid").addOption("dot", "Dotted")
+					.setValue(this.plugin.getQuickAddPageSettings().template).onChange(value => update({ template: value as PDFAnnotatorSettings["quickAddPageSettings"]["template"] }))) },
+			{ name: "Quick-add paper colour", render: setting => setting.setName("Default paper colour")
+				.setDesc("Paper colour for configured defaults, or when no previous temporary page exists.")
+				.addColorPicker(picker => picker.setValue(this.plugin.getQuickAddPageSettings().paperColor).onChange(value => update({ paperColor: value }))) }
 		];
 	}
 
@@ -397,115 +439,54 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 		}
 	}
 
-	private renderSettingsSection(
-		containerEl: HTMLElement,
-		name: string,
-		description: string
-	): void {
-		new Setting(containerEl)
-			.setName(name)
-			.setHeading();
-		containerEl.createEl("p", {
-			cls: "freedraw-pdf-settings-section-description",
-			text: description
-		});
+	private renderSettingsSection(containerEl: HTMLElement, name: string): HTMLElement {
+		const section = containerEl.createEl("section", { cls: "freedraw-pdf-settings-section" });
+		section.createEl("h3", { text: name, cls: "freedraw-pdf-settings-section-heading" });
+		return section.createDiv({ cls: "freedraw-pdf-settings-group" });
+	}
+
+	private syncQuickAddDefaultFields(): void {
+		if (this.quickAddDefaultsEl) this.quickAddDefaultsEl.hidden = this.plugin.getQuickAddPageSettings().source !== "defaults";
 	}
 
 	display(): void {
 		const { containerEl } = this;
 		containerEl.empty();
 		containerEl.addClass("freedraw-pdf-settings");
-
-		const definitions = new Map(
-			this.getSettingDefinitions().map((definition) => [definition.name, definition])
-		);
-
-		new Setting(containerEl)
-			.setName("Drawing and annotation")
-			.setHeading();
-		containerEl.createEl("p", {
-			cls: "freedraw-pdf-settings-intro",
-			text: "Choose how drawing feels and which controls stay visible. Changes apply to open PDFs immediately."
-		});
-
-		this.renderSettingsSection(
-			containerEl,
-			"Input",
-			"Set what finger, stylus, and mouse input do while annotation mode is active."
-		);
-		this.renderSettingDefinitions(containerEl, definitions, [
-			"Finger input",
-			"Stroke preview",
-			"Pressure input"
-		]);
-
-		this.renderSettingsSection(
-			containerEl,
-			"Tool defaults",
-			"Choose the starting size used when each tool is selected."
-		);
-		this.renderSettingDefinitions(containerEl, definitions, [
-			"Pen width",
-			"Highlighter width",
-			"Eraser size"
-		]);
-
-		this.renderSettingsSection(
-			containerEl,
-			"Toolbar",
-			"Keep frequent actions visible and move optional controls into menus."
-		);
-		this.renderSettingDefinitions(containerEl, definitions, [
-			"Toolbar placement",
-			"Region capture button",
-			"Copy embed button"
-		]);
-
-		this.renderSettingsSection(
-			containerEl,
-			"Markdown embeds",
-			"Control the appearance of annotated PDF previews placed in notes."
-		);
-		this.renderSettingDefinitions(containerEl, definitions, [
-			"Automatic region embed copy",
-			"Embed controls"
-		]);
-
-		this.renderSettingsSection(
-			containerEl,
-			"Saving and feedback",
-			"Control when annotation data is saved and how actions are confirmed."
-		);
-		this.renderSettingDefinitions(containerEl, definitions, [
-			"Save delay",
-			"Action notices"
-		]);
-
-		const advancedEl = containerEl.createEl("details", {
-			cls: "freedraw-pdf-settings-advanced"
-		});
-		advancedEl.createEl("summary", { text: "Advanced ink tuning" });
-		advancedEl.createEl("p", {
-			text: "Adjust stroke geometry only when the default ink feel needs fine tuning."
-		});
-		const advancedBodyEl = advancedEl.createDiv({
-			cls: "freedraw-pdf-settings-advanced-body"
-		});
-		this.renderSettingDefinitions(advancedBodyEl, definitions, [
-			"Stroke width response",
-			"Stabilization",
-			"Stroke smoothing",
-			"Pressure curve",
-			"Taper start",
-			"Taper end"
-		]);
-
-		this.renderSettingsSection(
-			containerEl,
-			"Troubleshooting",
-			"Leave diagnostics off during normal use."
-		);
-		this.renderSettingDefinitions(containerEl, definitions, ["Rendering diagnostics"]);
-
+		const definitions = new Map(this.buildSettingRows().map(definition => [definition.name, definition]));
+		const renderSection = (name: string, names: string[]) => {
+			const body = this.renderSettingsSection(containerEl, name);
+			this.renderSettingDefinitions(body, definitions, names);
+			return body;
+		};
+		renderSection("Drawing input", ["Finger input", "Stroke preview"]);
+		renderSection("Pen pressure", ["Pressure input", "Stroke width response", "Pressure curve"]);
+		renderSection("Stroke smoothing", ["Stabilization", "Width smoothing mode", "Stroke smoothing"]);
+		renderSection("Tool sizes", ["Pen width", "Highlighter width", "Eraser size"]);
+		renderSection("Stroke ends", ["Taper start", "Taper end"]);
+		const pages = renderSection("Pages / Quick add", ["Quick-add style source"]);
+		this.quickAddDefaultsEl = pages.createDiv({ cls: "freedraw-pdf-quick-add-defaults" });
+		this.renderSettingDefinitions(this.quickAddDefaultsEl, definitions, ["Quick-add template", "Quick-add paper colour"]);
+		this.syncQuickAddDefaultFields();
+		renderSection("Toolbar", ["Toolbar placement", "Region capture button", "Copy embed button"]);
+		renderSection("Markdown embeds", ["Automatic region embed copy", "Embed controls"]);
+		renderSection("Saving", ["Save delay"]);
+		const files = this.renderSettingsSection(containerEl, "File management");
+		new Setting(files).setName("Recover annotations from JSON")
+			.setDesc("Replace the active PDF's annotation layer with an earlier copy from the same folder. Current data is backed up. Use Combine JSON to add missing strokes.")
+			.addButton(button => button.setButtonText("Choose recovery").onClick(() => this.plugin.restoreActiveAnnotationData()));
+		new Setting(files).setName("Combine annotation JSON files")
+			.setDesc("Choose one PDF, a folder, or the whole vault. Add missing strokes, keeping different versions as separate stacked strokes. Combined recovery copies move to trash after saving.")
+			.addButton(button => button.setButtonText("Combine JSON").onClick(async () => {
+				button.setDisabled(true);
+				try { await this.plugin.cleanAnnotationFiles(false); } finally { button.setDisabled(false); }
+			}));
+		new Setting(files).setName("Remove data for deleted PDFs")
+			.setDesc("Remove leftover annotation and recovery JSONs whose PDF is missing. Starts with the whole vault; you can limit it to a folder or PDF. You confirm before files move to trash.")
+			.addButton(button => button.setButtonText("Clean deleted PDFs").onClick(async () => {
+				button.setDisabled(true);
+				try { await this.plugin.cleanAnnotationFiles(true); } finally { button.setDisabled(false); }
+			}));
+		renderSection("Debug", ["Action notices", "Rendering diagnostics"]);
 	}
 }

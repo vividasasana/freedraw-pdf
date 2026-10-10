@@ -29,7 +29,7 @@ async function main() {
     assert.ok(a >= 0 && b > a);
     return mainSource.slice(a, b);
   }).join("\n");
-  const scope = { Image: FakeImage, isEmbeddedImageDataUrl };
+  const scope = { Image: FakeImage, isEmbeddedImageDataUrl, SvgDrawingContext: load('src/render/svgDrawingContext.ts').SvgDrawingContext };
   vm.runInNewContext(ts.transpileModule("class Session {" + methods + "}globalThis.Session=Session;", { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText, scope);
   const session = new scope.Session();
   for (const dataUrl of ["https://example.invalid/tracker.png", "//example.invalid/tracker", "file:///private.png", "javascript:void(0)", "data:text/html,<script></script>", "data:image/png;broken", null, {}]) {

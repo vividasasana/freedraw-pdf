@@ -9,13 +9,13 @@ function read(relativePath) {
 }
 
 function assertContains(fileName, content, needle, message) {
-	if (!content.includes(needle)) {
+	if (!content.replace(/\r\n/g, "\n").includes(needle.replace(/\r\n/g, "\n"))) {
 		throw new Error(`${fileName}: ${message}\nMissing: ${needle}`);
 	}
 }
 
 function assertNotContains(fileName, content, needle, message) {
-	if (content.includes(needle)) {
+	if (content.replace(/\r\n/g, "\n").includes(needle.replace(/\r\n/g, "\n"))) {
 		throw new Error(`${fileName}: ${message}\nUnexpected: ${needle}`);
 	}
 }
@@ -143,11 +143,11 @@ assertContains("main.ts", mainTs, "surface.overlayEl.parentElement !== surface.h
 assertContains("main.ts", mainTs, "surface.hostEl.appendChild(backgroundEl);", "template backgrounds must not use a detached overlay as an insertBefore reference");
 assertNotContains("main.ts", mainTs, "surface.hostEl.insertBefore(backgroundEl, surface.overlayEl);", "template background insertion must not abort redraw when PDF.js reparents the overlay");
 assertContains("main.ts", mainTs, "private getLivePreviewPredictionStrength(): number", "live stroke preview must expose a single fidelity-to-smoothness control");
-assertContains("main.ts", mainTs, "case \"accurate\":", "live stroke preview must offer canonical no-prediction geometry");
-assertContains("main.ts", mainTs, "case \"balanced\":", "live stroke preview must offer a balanced prediction amount");
-assertContains("main.ts", mainTs, "case \"smooth\":", "live stroke preview must preserve the smoothest response option");
+assertContains("main.ts", mainTs, 'this.plugin.getLivePreviewMode() !== "auto-smooth"', "Fast and Accurate must disable tip prediction");
+assertContains("main.ts", mainTs, 'this.plugin.getLivePreviewMode() === "fast"', "Fast must use lighter live geometry");
+assertContains("main.ts", mainTs, "alignment ** 4 * steady * pressureSteady", "Auto smooth must back off at turns and changing pressure");
 assertContains("main.ts", mainTs, "const predictionStrength = commitCurrentStroke ? 0 : this.getLivePreviewPredictionStrength();", "stroke commit must force canonical geometry regardless of preview preference");
-assertContains("main.ts", mainTs, "this.drawStroke(context, surface, this.currentStroke, predictTail, !commitCurrentStroke, predictionStrength);", "live drawing must pass the selected prediction strength through the release renderer");
+assertContains("main.ts", mainTs, "this.drawStroke(vectorContext ?? context, surface, this.currentStroke, predictTail, !commitCurrentStroke, predictionStrength);", "live vector or canvas drawing must pass the selected prediction strength through the release renderer");
 assertContains("main.ts", mainTs, "this.drawReliablePdfStroke(context, surface, stroke, baseWidth, true, predictTail, livePreview, predictionStrength);", "pen rendering must stay on the release Perfect Freehand path");
 assertNotContains("main.ts", mainTs, "drawBalancedLiveStroke", "alternate stroke renderers must not redraw handwriting into different geometry");
 assertNotContains("main.ts", mainTs, "getFastPreviewStrokePoints", "live preview must not use a separate smoothing path from final rendering");
@@ -217,7 +217,7 @@ assertContains("main.ts", mainTs, "this.eraseCommittedLayerAlongPath(surface, th
 assertContains("main.ts", mainTs, "this.retainCommittedPagePixels(pageNumber);", "touch eraser pointer-up must keep its pixel result without redrawing surviving strokes");
 assertContains("main.ts", mainTs, "private redrawObjectErasePreview(pageNumber: number, changedTargets: SelectedTarget[]): void", "object erasing must rebuild offscreen without queueing a page render");
 assertContains("main.ts", mainTs, "const excludedKeys = new Set(this.objectErasePreviewTargets.keys());", "object erasing must exclude only selected targets while rebuilding overlaps");
-assertContains("main.ts", mainTs, "const renderCanvas = this.getNextPageRenderSlot(surface);", "object erasing must compose the post-erase page in an offscreen slot");
+assertContains("main.ts", mainTs, "const renderCanvas = vectorContext ? surface.overlayEl : this.getNextPageRenderSlot(surface) ?? this.getObjectEraseRenderCanvas(surface);", "object erasing must use SVG or compose the canvas fallback offscreen even while snapshot slots are busy");
 assertContains("main.ts", mainTs, "this.publishRenderedCanvas(renderCanvas, surface.overlayEl);", "object erasing must publish the completed result in one atomic pixel-frame swap");
 assertNotContains("main.ts", mainTs, "context.clip();", "object erasing must not expose clipped reconstruction seams");
 assertNotContains("main.ts", mainTs, "private eraseObjectTargetsFromCommittedLayer", "object erasing must not punch target geometry through the flattened canvas");
@@ -238,18 +238,19 @@ assertContains("main.ts", mainTs, "if (!isInkDrawingTool(tool) && this.pendingCo
 assertContains("main.ts", mainTs, "private showDrawingNotice(message: string, durationMs: number): void", "drawing/history notices must be routed through a setting-aware helper");
 assertContains("main.ts", mainTs, "this.plugin.shouldShowDrawingNotices()", "drawing/history notice helper must honor the settings toggle");
 assertContains("src/settings/settingTab.ts", read("src/settings/settingTab.ts"), "Action notices", "settings must expose a clearly labeled drawing notice toggle");
-assertContains("src/settings/settingTab.ts", read("src/settings/settingTab.ts"), ".setName(\"Drawing and annotation\")", "settings must start with a user-focused heading");
-assertContains("src/settings/settingTab.ts", read("src/settings/settingTab.ts"), "\"Input\",\n\t\t\t\"Set what finger, stylus, and mouse input do", "settings must group input behavior by user task");
-assertContains("src/settings/settingTab.ts", read("src/settings/settingTab.ts"), "\"Tool defaults\",\n\t\t\t\"Choose the starting size", "settings must group tool defaults separately");
-assertContains("src/settings/settingTab.ts", read("src/settings/settingTab.ts"), "\"Toolbar\",\n\t\t\t\"Keep frequent actions visible", "settings must group toolbar visibility controls");
-assertContains("src/settings/settingTab.ts", read("src/settings/settingTab.ts"), "\"Saving and feedback\"", "settings must group persistence and notices");
-assertContains("src/settings/settingTab.ts", read("src/settings/settingTab.ts"), "cls: \"freedraw-pdf-settings-advanced\"", "advanced ink controls must be collapsed outside the primary path");
+assertNotContains("src/settings/settingTab.ts", read("src/settings/settingTab.ts"), "containerEl.createEl(\"h2\", { text: \"Drawing and annotation\" })", "settings must omit the removed introduction heading");
+assertContains("src/settings/settingTab.ts", read("src/settings/settingTab.ts"), "renderSection(\"Drawing input\"", "settings must group input behavior by user task");
+assertContains("src/settings/settingTab.ts", read("src/settings/settingTab.ts"), "renderSection(\"Tool sizes\"", "settings must group tool defaults separately");
+assertContains("src/settings/settingTab.ts", read("src/settings/settingTab.ts"), "renderSection(\"Toolbar\"", "settings must group toolbar visibility controls");
+assertContains("src/settings/settingTab.ts", read("src/settings/settingTab.ts"), "renderSection(\"Saving\"", "settings must group persistence and notices");
+assertContains("src/settings/settingTab.ts", read("src/settings/settingTab.ts"), "renderSection(\"Stroke ends\"", "taper controls must remain visible in their own section");
 assertContains("src/settings/settingTab.ts", read("src/settings/settingTab.ts"), "const definitions = new Map(", "visible settings must render from the searchable definition source");
-assertContains("styles.css", stylesCss, ".freedraw-pdf-settings-advanced > summary", "advanced settings disclosure must have an accessible touch target");
+assertContains("styles.css", stylesCss, ".freedraw-pdf-path-input", "path selection must use a native text field");
 assertContains("main.ts", mainTs, "this.pauseCommittedRenderingForInkInput();", "accepted ink pointer-down must pause stale committed redraw work");
 assertNotContains("main.ts", mainTs, "if (this.pendingCommittedRedrawPages.has(pageNumber)) {\n\t\t\t\tthis.drawPageAnnotations(pageNumber);\n\t\t\t}", "starting a new ink stroke must not synchronously run pending committed rendering");
 assertContains("main.ts", mainTs, "if (this.hasActiveTransientRender()) {\n\t\t\treturn;\n\t\t}", "scroll redraw flushing must not run during active transient input");
-assertContains("main.ts", mainTs, "image.onload = () => this.schedulePageRedraw(imageItem.page);", "image load callbacks must use the guarded redraw scheduler");
+assertContains("main.ts", mainTs, "image.onload = () => {", "image load callbacks must invalidate the retained frame before redrawing");
+assertContains("main.ts", mainTs, "this.schedulePageRedraw(imageItem.page);", "image load callbacks must use the guarded redraw scheduler");
 assertNotContains("main.ts", mainTs, "freedraw-pdf perf:", "production build must not include temporary performance console logging");
 assertNotContains("main.ts", mainTs, "private notePerf(", "production build must not include temporary performance instrumentation");
 assertNotContains("main.ts", mainTs, "this.notePerf(", "production build must not call temporary performance instrumentation");

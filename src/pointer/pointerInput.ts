@@ -52,12 +52,11 @@ export function shouldCaptureInkPointerEvent(
 
 export function shouldPanInkPointerEvent(
 	event: PointerEvent,
-	tool: AnnotationTool,
+	_tool: AnnotationTool,
 	policy: InkInputPolicy = "pen-mouse-stylus-touch"
 ): boolean {
 	return event.pointerType === "touch" &&
 		event.isPrimary !== false &&
-		isInkDrawingTool(tool) &&
 		policy === "pen-mouse-only" &&
 		!isStylusLikePointerEvent(event);
 }
@@ -125,13 +124,16 @@ export function isWebKitStylusTouch(touch: {
 
 export function getCoalescedPointerEvents(event: PointerEvent): PointerEvent[] {
 	if ((event.pointerType === "touch" || event.pointerType === "pen") && typeof event.getCoalescedEvents === "function") {
-		const samples = event.getCoalescedEvents();
-		if (samples.length > 0) {
-			const last = samples[samples.length - 1];
-			if (last.clientX !== event.clientX || last.clientY !== event.clientY || last.timeStamp !== event.timeStamp) {
-				return [...samples, event];
+		try {
+			const samples = event.getCoalescedEvents().filter(sample => Number.isFinite(sample.clientX) && Number.isFinite(sample.clientY));
+			if (samples.length > 0) {
+				if (!samples.some(sample => sample.clientX === event.clientX && sample.clientY === event.clientY && sample.timeStamp === event.timeStamp)) {
+					samples.push(event);
+				}
+				return samples.sort((left, right) => left.timeStamp - right.timeStamp);
 			}
-			return samples;
+		} catch {
+			// Some embedded browser drivers expose the method but cannot supply samples.
 		}
 	}
 	return [event];
@@ -142,11 +144,13 @@ export function resolvePointerPressure(
 	lastPoint: { clientX: number; clientY: number } | null,
 	lastPointTime: number,
 	pressureMode: InkPressureMode = "auto",
-	forceStylus = false
+	forceStylus = false,
+	lastPressure?: number
 ): number {
 	const inputMethod = getInputMethod(event);
-	const useReportedPressure = pressureMode !== "simulate" &&
-		(forceStylus || inputMethod === "pen" || isStylusLikePointerEvent(event));
+	// Pen identity takes precedence over the mouse/finger simulation preference.
+	// A stylus must never derive contact force from its writing velocity.
+	const useReportedPressure = forceStylus || inputMethod === "pen" || isStylusLikePointerEvent(event);
 	if (useReportedPressure) {
 		if (event.pressure > 0) {
 			return clamp(event.pressure, 0.06, 1);
@@ -155,6 +159,11 @@ export function resolvePointerPressure(
 		if (typeof webkitForce === "number" && webkitForce > 0) {
 			return clamp(webkitForce, 0.06, 1);
 		}
+		// A zero-pressure Pencil sample is not mouse input. Falling through to
+		// velocity simulation can turn a stationary sample into maximum width.
+		return typeof lastPressure === "number" && Number.isFinite(lastPressure)
+			? clamp(lastPressure, 0.06, 1)
+			: 0.06;
 	}
 	if (pressureMode === "stylus") {
 		return 0.5;

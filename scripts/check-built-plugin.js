@@ -13,7 +13,7 @@ class Plugin {
 	registerMarkdownCodeBlockProcessor(name) { blocks.push(name); }
 }
 class TFile {}
-const obsidian = { Plugin, TFile, Modal: class {}, PluginSettingTab: class {}, Notice: class {}, normalizePath: value => value };
+const obsidian = { Plugin, TFile, AbstractInputSuggest:class{},Modal: class {}, PluginSettingTab: class {}, Notice: class {}, normalizePath: value => value };
 const moduleShim = { exports: {} };
 vm.runInNewContext(fs.readFileSync(bundlePath, "utf8"), {
 	module: moduleShim, exports: moduleShim.exports, console, TextEncoder,

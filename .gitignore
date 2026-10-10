@@ -38,3 +38,9 @@ test-vault/
 
 # Local development snapshots; publish the current plugin at the repository root.
 /v[0-9]*/
+
+# Keep release preparation and companion-plugin work out of Freedraw main.
+/release-source/
+/downloads/
+/annotation-sync-guard/
+build-info.json

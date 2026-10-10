@@ -44,6 +44,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" --verify-tag --title "Freedraw PDF $GITHUB_REF_NAME" \
-            --notes-file "docs/releases/${GITHUB_REF_NAME}.md" \
-            manifest.json main.js styles.css
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" --clobber manifest.json main.js styles.css
+            gh release edit "$GITHUB_REF_NAME" --title "Freedraw PDF $GITHUB_REF_NAME" \
+              --notes-file "docs/releases/${GITHUB_REF_NAME}.md" --prerelease=false --latest
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "Freedraw PDF $GITHUB_REF_NAME" \
+              --notes-file "docs/releases/${GITHUB_REF_NAME}.md" \
+              manifest.json main.js styles.css
+          fi

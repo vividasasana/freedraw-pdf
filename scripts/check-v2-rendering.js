@@ -28,7 +28,7 @@ const fakeContext={save(){},restore(){},setTransform(){},clearRect(){},drawImage
 const fakeCanvas={width:1000,height:1400,getContext:()=>fakeContext};
 const preview=method('\tprivate drawSelectionPreview(', '\n\tprivate drawPageAnnotations(', {getAnnotationRenderables:(strokes)=>strokes.map(annotation=>({kind:'stroke',annotation}))});
 const strokes=Array.from({length:1001},(_,i)=>({id:String(i),page:1}));
-Object.assign(preview,{dragAnchor:{x:0,y:0},currentLasso:null,selectedTargets:[{id:'1000',page:1,kind:'stroke'}],selectionBackground:null,ownerWindow:{devicePixelRatio:1,createEl:()=>({...fakeCanvas})},getPageAnnotationBucket:()=>({strokes,textItems:[],shapes:[],imageItems:[]}),drawStroke:(c,s,stroke)=>{if(stroke.id==='1000')selectedDraws++;else backgroundDraws++},drawText(){},drawShape(){},drawImageAnnotation(){},drawSelection(){},publishRenderedCanvas(){}});
+Object.assign(preview,{dragAnchor:{x:0,y:0},currentLasso:null,selectedTargets:[{id:'1000',page:1,kind:'stroke'}],selectionBackground:null,ownerWindow:{devicePixelRatio:1,createEl:()=>({...fakeCanvas})},getAnnotationPixelRatio:()=>1,getPageAnnotationBucket:()=>({strokes,textItems:[],shapes:[],imageItems:[]}),drawStroke:(c,s,stroke)=>{if(stroke.id==='1000')selectedDraws++;else backgroundDraws++},drawText(){},drawShape(){},drawImageAnnotation(){},drawSelection(){},publishRenderedCanvas(){}});
 const surface={pageNumber:1,lastWidth:1000,lastHeight:1400,overlayEl:fakeCanvas};
 assert.equal(preview.drawSelectionPreview(surface),true);
 for(let i=0;i<20;i++)preview.drawSelectionPreview(surface);

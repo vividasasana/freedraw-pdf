@@ -3,6 +3,7 @@ const path = require("path");
 const vm = require("vm");
 const { performance } = require("perf_hooks");
 const ts = require("typescript");
+const { loadSource } = require("./load-source");
 
 const projectRoot = path.resolve(__dirname, "..");
 
@@ -48,15 +49,14 @@ try {
 	assert(source.includes("const effectiveUsePressure = usePressure;"), "stored stylus or simulated pressure must reach perfect-freehand");
 	assert(source.includes("taper: options.startTaper === undefined ? settings.taperStart : options.startTaper * geometryScale"), "eraser-cut starts must be able to suppress artificial tapering");
 	assert(source.includes("taper: options.endTaper === undefined ? settings.taperEnd : options.endTaper * geometryScale"), "eraser-cut ends must be able to suppress artificial tapering");
-	assert(source.includes("): string | null {\n\tconst outline = getSmoothInkStrokeOutline"), "live outline helper must retain the last Git version's return contract");
-	assert(source.includes("return getSvgPathFromStroke(outline) || null;"), "live outline helper must retain the last Git version's path publication behavior");
+	assert(source.includes("return options.serializePath === false ? null : getSvgPathFromStroke(outline) || null;"), "canvas-only drawing must preserve numeric geometry and default SVG publication");
 	assert(source.includes('(renderMode === "live" || predictTail || !usePressure)'), "live fallback selection must match the last Git version");
 	const drawSmoothSource = source.slice(
 		source.indexOf("export function drawSmoothInkStroke"),
 		source.indexOf("export function drawInkDot")
 	);
 	const liveFastPathIndex = drawSmoothSource.indexOf('renderMode === "live"');
-	const outlinePathIndex = drawSmoothSource.indexOf("drawFreehandOutlineStroke");
+	const outlinePathIndex = drawSmoothSource.indexOf("getSmoothInkStrokeOutline");
 	assert(
 		outlinePathIndex >= 0 && (liveFastPathIndex < 0 || outlinePathIndex < liveFastPathIndex),
 		"live ink must render the same pressure-sensitive outline before any uniform-width fallback"
@@ -68,13 +68,13 @@ try {
 		"stroke commit must replace the retained live preview with canonical geometry"
 	);
 	assert(mainSource.includes("const predictionStrength = commitCurrentStroke ? 0 : this.getLivePreviewPredictionStrength();"), "committed stroke promotion must disable tail prediction");
-	assert(typesSource.includes('export type LivePreviewMode = "accurate" | "balanced" | "smooth";'), "live preview preference must expose closest, balanced, and smoothest choices");
-	assert(configSource.includes('livePreviewMode: "balanced"'), "balanced preview must be the default compromise between fidelity and response");
-	assert(settingsControllerSource.includes('value === "quality" ? "smooth"'), "legacy detailed preview preference must migrate to smoothest");
-	assert(settingsControllerSource.includes('value === "fast" ? "accurate"'), "legacy responsive preview preference must migrate to closest geometry");
-	assert((settingsSource.match(/\.addOption\("accurate", "Closest to saved"\)/g) ?? []).length === 1, "the canonical settings definition must offer closest-to-saved preview exactly once");
-	assert((settingsSource.match(/\.addOption\("balanced", "Balanced"\)/g) ?? []).length === 1, "the canonical settings definition must offer balanced preview exactly once");
-	assert((settingsSource.match(/\.addOption\("smooth", "Smoothest"\)/g) ?? []).length === 1, "the canonical settings definition must offer smoothest preview exactly once");
+	assert(typesSource.includes('export type LivePreviewMode = "fast" | "accurate" | "auto-smooth";'), "live preview must expose Fast, Accurate and Auto smooth");
+	assert(configSource.includes('livePreviewMode: "auto-smooth"'), "adaptive preview must be the new default");
+	assert(settingsControllerSource.includes('value === "quality" || value === "smooth" ? "auto-smooth"'), "legacy smooth preview must migrate to Auto smooth");
+	assert(settingsControllerSource.includes('value === "balanced" ? "accurate"'), "legacy non-predictive balanced preview must migrate to Accurate");
+	assert((settingsSource.match(/\.addOption\("accurate", "Accurate"\)/g) ?? []).length === 1, "offer Accurate exactly once");
+	assert((settingsSource.match(/\.addOption\("fast", "Fast"\)/g) ?? []).length === 1, "offer Fast exactly once");
+	assert((settingsSource.match(/\.addOption\("auto-smooth", "Smoothest"\)/g) ?? []).length === 1, "offer Smoothest exactly once");
 	assert(
 		mainSource.includes("const cachedOutline = this.getCachedStrokeOutline"),
 		"committed rendering must reuse cached numeric outlines"
@@ -122,7 +122,7 @@ try {
 	});
 	const moduleShim = { exports: {} };
 	vm.runInNewContext(transpiled.outputText, {
-		require,
+		require: name => name.startsWith(".") ? loadSource(path.join("src/ink", name + ".ts")) : require(name),
 		module: moduleShim,
 		exports: moduleShim.exports,
 		console

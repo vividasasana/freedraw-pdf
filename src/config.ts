@@ -92,6 +92,7 @@ export const DEFAULT_TOOL_STATE: ToolStateSnapshot = {
 };
 
 export const DEFAULT_SETTINGS: PDFAnnotatorSettings = {
+	quickAddPageSettings: { source: "previous", template: "ruled", paperColor: "#fffdf7" },
 	pressureCaptureVersion: 1,
 	toolDefaults: {
 		...DEFAULT_TOOL_STATE,
@@ -108,8 +109,15 @@ export const DEFAULT_SETTINGS: PDFAnnotatorSettings = {
 	showDrawingNotices: false,
 	showRenderTelemetry: false,
 	inkInputPolicy: "pen-mouse-only",
-	livePreviewMode: "balanced",
+	livePreviewMode: "auto-smooth",
 	inkRenderSettings: {
+		inkModel: "continuous-v1",
+		smoothingMode: "pressure",
+		pressureResponse: "gentle",
+		strokeGeometry: "round",
+		edgeGeometryVersion: 2,
+		widthSmoothing: "extra-smooth",
+		widthSmoothingVersion: 2,
 		thinning: 0.5,
 		streamline: 0.12,
 		smoothing: 0.5,

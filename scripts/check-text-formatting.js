@@ -80,7 +80,7 @@ if ((mainTs.match(/onClose: \(\) => this\.refocusInlineTextEditor\(\)/g) ?? []).
 assertNotContains("main.ts", mainTs, 'editor.addEventListener("blur", commit, { once: true });', "the editor blur handler must survive temporary toolbar focus");
 assertContains("main.ts", mainTs, "private getTextContentLineBounds", "text hit-testing must follow rendered text lines");
 assertContains("main.ts", mainTs, "const lineBounds = this.getTextContentLineBounds(item, pageNumber);", "text clicks must use content geometry instead of the editing box");
-assertContains("main.ts", mainTs, 'if (this.currentTool === "text") {\n\t\t\t\t\tthis.selectedTarget = null;', "committed text must leave the text tool ready for another insertion");
+assertContains("main.ts", mainTs, 'this.selectedTarget = { kind: "text", id: existing.id, page: pageNumber };', "committed text must retain its box for the Text/Select handoff");
 assertNotContains("main.ts", mainTs, "const selectedTextTarget = this.selectedTargets.find", "blank text-tool clicks must not reopen the previously selected text box");
 if (mainTs.includes("this.currentTextFontSize = Math.round(baseFontSize);")) {
 	throw new Error("main.ts: reopening text must not save zoom-dependent screen pixels as the logical font size");

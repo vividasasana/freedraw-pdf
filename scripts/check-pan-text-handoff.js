@@ -1,0 +1,18 @@
+const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),ts=require('typescript'),assert=require('node:assert/strict');
+const root=path.resolve(__dirname,'..');
+function load(relative,overrides={}){const module={exports:{}};const filename=path.join(root,relative);const code=ts.transpileModule(fs.readFileSync(filename,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText;
+ vm.runInNewContext(code,{module,exports:module.exports,require:n=>overrides[n]??(n.startsWith('.')?load(path.relative(root,path.resolve(path.dirname(filename),n+'.ts')),overrides):require(n)),console});return module.exports;}
+const input=load('src/pointer/pointerInput.ts',{'../utils/deviceUtils':{getInputMethod:e=>e.pointerType,isTabletWebKitTouchDevice:()=>true},'../tools/toolState':{isShapeTool:()=>false}});
+const finger={pointerType:'touch',isPrimary:true,width:12,height:12};
+for(const tool of ['pen','text','select','region']) assert.equal(input.shouldPanInkPointerEvent(finger,tool,'pen-mouse-only'),true,tool+' must allow finger panning');
+assert.equal(input.shouldPanInkPointerEvent({...finger,pointerType:'pen'},'text','pen-mouse-only'),false);
+const main=fs.readFileSync(path.join(root,'main.ts'),'utf8');const begin=main.indexOf('\tprivate setActiveTool('),end=main.indexOf('\n\tprivate setCurrentColor(',begin);const code=ts.transpileModule('class Session{'+main.slice(begin,end)+'}\nglobalThis.Session=Session',{compilerOptions:{target:ts.ScriptTarget.ES2020}}).outputText;
+const context={isInkDrawingTool:t=>t==='pen'};vm.runInNewContext(code,context);
+const session=new context.Session(),target={kind:'text',id:'box-1',page:1};Object.assign(session,{currentTool:'text',inlineTextEditorEl:{},annotationDocument:{textItems:[{id:'box-1',page:1,x:.2,y:.3}]},selectedTargets:[target],selectedTarget:target,pendingCommittedRedrawPages:new Set(),annotationMode:true,
+ finishSessionInlineTextEditor(){this.inlineTextEditorEl=null;this.selectedTargets=this.currentTool==='text'?[]:[target];},clearSelection(){this.selectedTargets=[];},persistToolDefaults(){},beginSessionInlineTextEditor(page,point,item){this.edited=item.id;},toolState:{setActiveTool(t){session.currentTool=t;}}});
+session.setActiveTool('select');assert.equal(session.selectedTargets[0]?.id,'box-1','Text to Select must preserve the edited box');session.setActiveTool('text');assert.equal(session.edited,'box-1','Select to Text must open the selected box immediately');
+const commitStart=main.indexOf('\tprivate finishSessionInlineTextEditor('),commitEnd=main.indexOf('\n\tprivate getInlineTextFramePoint(',commitStart);
+const commitContext={clamp:(v,a,b)=>Math.min(b,Math.max(a,v))};vm.runInNewContext(ts.transpileModule('class CommitSession{'+main.slice(commitStart,commitEnd)+'}\nglobalThis.CommitSession=CommitSession',{compilerOptions:{target:ts.ScriptTarget.ES2020}}).outputText,commitContext);
+const commit=new commitContext.CommitSession();Object.assign(commit,{currentTool:'text',inlineTextEditorEl:{value:'hello',dataset:{},getBoundingClientRect:()=>null,remove(){}},inlineTextEditorFrameEl:null,inlineTextPageNumber:1,inlineTextTargetId:'box-1',inlineTextAutoFit:false,annotationDocument:{textItems:[{id:'box-1'}]},pageSurfaces:new Map([[1,{lastWidth:100,lastHeight:100}]]),getInlineTextFramePoint:()=>({x:.2,y:.3}),getInlineTextPreviewItem:()=>null,pushHistory(){},getStableTextFontScale:()=>.01,markDirtyAndRedraw(){}});
+commit.finishSessionInlineTextEditor(true);assert.equal(commit.selectedTargets[0]?.id,'box-1','Blur before the toolbar click must retain text selection');
+console.log('Finger pan in all four tools and bidirectional text/select handoff passed');

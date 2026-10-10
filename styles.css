@@ -1472,6 +1472,17 @@
 	background: transparent;
 }
 
+.pdf-native-annotator-vector {
+	position: absolute;
+	inset: 0;
+	display: block;
+	width: 100%;
+	height: 100%;
+	z-index: 9990;
+	pointer-events: none;
+	overflow: hidden;
+}
+
 .pdf-native-annotator-overlay {
 	z-index: 9990;
 	pointer-events: none;
@@ -1787,51 +1798,79 @@
 
 .freedraw-pdf-settings {
 	max-width: 780px;
+	--freedraw-settings-inset: 20px;
+	padding-top: 24px;
 }
 
-.freedraw-pdf-settings-intro,
-.freedraw-pdf-settings-section-description {
-	max-width: 68ch;
-	margin: 0 0 var(--size-4-3);
-	color: var(--text-muted);
-	font-size: var(--font-ui-small);
-	line-height: 1.5;
+.freedraw-pdf-file-details {
+	display: grid;
+	grid-template-columns: max-content minmax(0, 1fr);
+	gap: 8px 16px;
 }
 
-.freedraw-pdf-settings-intro {
-	margin-bottom: var(--size-4-6);
-	color: var(--text-normal);
-}
-
-.freedraw-pdf-settings .setting-item-heading {
-	margin-top: var(--size-4-6);
-}
-
-.freedraw-pdf-settings-advanced {
-	margin-top: var(--size-4-8);
-	border-top: 1px solid var(--background-modifier-border);
-	border-bottom: 1px solid var(--background-modifier-border);
-}
-
-.freedraw-pdf-settings-advanced > summary {
-	display: flex;
-	align-items: center;
-	min-height: 44px;
-	color: var(--text-normal);
+.freedraw-pdf-file-details dt {
 	font-weight: var(--font-semibold);
-	cursor: pointer;
 }
 
-.freedraw-pdf-settings-advanced > p {
-	max-width: 68ch;
-	margin: 0 0 var(--size-4-4);
-	color: var(--text-muted);
-	font-size: var(--font-ui-small);
-	line-height: 1.5;
+.freedraw-pdf-file-details dd {
+	margin: 0;
 }
 
-.freedraw-pdf-settings-advanced-body {
-	padding-bottom: var(--size-4-4);
+.freedraw-pdf-file-report {
+	max-height: 55vh;
+	overflow-y: auto;
+}
+
+.freedraw-pdf-file-report .setting-item-name,
+.freedraw-pdf-file-report .setting-item-description {
+	overflow-wrap: anywhere;
+}
+
+.freedraw-pdf-path-input { width: 100%; }
+.freedraw-pdf-path-setting .setting-item-control { min-width: 45%; }
+.freedraw-pdf-path-error { color: var(--text-error); font-size: var(--font-ui-small); }
+.freedraw-pdf-path-error[hidden] { display: none; }
+
+.freedraw-pdf-settings > .freedraw-pdf-settings-section {
+	display: grid;
+	gap: 16px;
+	margin: 28px 0 0;
+	padding: 0;
+}
+
+.freedraw-pdf-settings > .freedraw-pdf-settings-section:first-child {
+	margin-top: 0;
+}
+
+.freedraw-pdf-settings .freedraw-pdf-settings-section-heading {
+	margin: 0;
+	padding: 0 var(--freedraw-settings-inset);
+	font-size: var(--font-ui-medium);
+	font-weight: var(--font-semibold);
+	line-height: 1.4;
+}
+
+.freedraw-pdf-settings-group {
+	padding: 0 var(--freedraw-settings-inset);
+	border: 0;
+	border-radius: var(--radius-l);
+	background: var(--background-secondary);
+}
+
+.freedraw-pdf-settings-group .setting-item {
+	margin: 0;
+	padding: var(--size-4-5) 0;
+	border-radius: 0;
+	background: transparent;
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+.freedraw-pdf-settings-group > .setting-item:first-child {
+	border-top: 0;
+}
+
+.freedraw-pdf-quick-add-defaults[hidden] {
+	display: none;
 }
 
 @media (max-width: 960px) {

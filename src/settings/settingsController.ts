@@ -1,7 +1,7 @@
 import { DEFAULT_SETTINGS, clampToolWidth, normalizeToolPresets } from "../config";
 import type { InkEasingMode, InkInputPolicy, InkPressureMode, InkRenderSettings, LivePreviewMode, PDFAnnotatorSettings, ToolPreset, ToolStateSnapshot } from "../types";
 
-type BehaviorSettingKeys = "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "autoCopyRegionEmbed" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "autosaveDelayMs";
+type BehaviorSettingKeys = "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "autoCopyRegionEmbed" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "quickAddPageSettings" | "autosaveDelayMs";
 
 function normalizeInkInputPolicy(value: unknown): InkInputPolicy {
 	if (value === "pen-mouse-stylus-touch") {
@@ -11,14 +11,23 @@ function normalizeInkInputPolicy(value: unknown): InkInputPolicy {
 }
 
 function normalizeLivePreviewMode(value: unknown): LivePreviewMode {
-	const migratedValue = value === "quality" ? "smooth" : value === "fast" ? "accurate" : value;
-	return migratedValue === "accurate" || migratedValue === "balanced" || migratedValue === "smooth"
+	const migratedValue = value === "quality" || value === "smooth" ? "auto-smooth" : value === "balanced" ? "accurate" : value;
+	return migratedValue === "accurate" || migratedValue === "fast" || migratedValue === "auto-smooth"
 		? migratedValue
 		: DEFAULT_SETTINGS.livePreviewMode;
 }
 
 function normalizeColor(value: unknown, fallback: string): string {
 	return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value) ? value : fallback;
+}
+
+function normalizeQuickAddPageSettings(value: unknown): PDFAnnotatorSettings["quickAddPageSettings"] {
+	const raw = value && typeof value === "object" ? value as Partial<PDFAnnotatorSettings["quickAddPageSettings"]> : {};
+	return {
+		source: raw.source === "defaults" ? "defaults" : "previous",
+		template: raw.template === "blank" || raw.template === "grid" || raw.template === "dot" || raw.template === "ruled" ? raw.template : DEFAULT_SETTINGS.quickAddPageSettings.template,
+		paperColor: normalizeColor(raw.paperColor, DEFAULT_SETTINGS.quickAddPageSettings.paperColor)
+	};
 }
 
 function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
@@ -42,6 +51,13 @@ function normalizeInkEasingMode(value: unknown): InkEasingMode {
 export function normalizeInkRenderSettings(value: unknown): InkRenderSettings {
 	const raw = value && typeof value === "object" ? value as Partial<InkRenderSettings> : {};
 	return {
+		...(raw.inkModel === "continuous-v1" ? { inkModel: "continuous-v1" as const } : {}),
+		...(raw.smoothingMode === "pressure" ? { smoothingMode: "pressure" as const } : {}),
+		...(raw.smoothingMode === "pressure" && raw.pressureResponse === "gentle" ? { pressureResponse: "gentle" as const } : {}),
+		...(raw.strokeGeometry === "round" ? { strokeGeometry: "round" as const } : {}),
+		...(raw.edgeGeometryVersion === 2 ? { edgeGeometryVersion: 2 as const } : {}),
+		...(raw.widthSmoothing === "original" || raw.widthSmoothing === "extra-smooth" ? { widthSmoothing: raw.widthSmoothing } : {}),
+		...(raw.widthSmoothingVersion === 2 ? { widthSmoothingVersion: 2 as const } : {}),
 		thinning: clampNumber(raw.thinning, DEFAULT_SETTINGS.inkRenderSettings.thinning, -1, 1),
 		streamline: clampNumber(raw.streamline, DEFAULT_SETTINGS.inkRenderSettings.streamline, 0, 1),
 		smoothing: clampNumber(raw.smoothing, DEFAULT_SETTINGS.inkRenderSettings.smoothing, 0, 1),
@@ -69,12 +85,30 @@ export class PDFAnnotatorSettingsController {
 		const normalizedPresets = normalizeToolPresets(loaded?.presets);
 		const shouldMigrateLegacyPressure = loaded?.pressureCaptureVersion !== 1;
 		const loadedLivePreviewMode = (loaded as { livePreviewMode?: unknown } | null | undefined)?.livePreviewMode;
-		const shouldMigrateLegacyPreview = loadedLivePreviewMode === "quality" || loadedLivePreviewMode === "fast";
+		const shouldMigrateLegacyPreview = loadedLivePreviewMode !== normalizeLivePreviewMode(loadedLivePreviewMode);
 		const inkRenderSettings = normalizeInkRenderSettings(loaded?.inkRenderSettings);
+		const legacyInkRenderSettings = normalizeInkRenderSettings(loaded?.legacyInkRenderSettings ?? loaded?.inkRenderSettings ?? { ...DEFAULT_SETTINGS.inkRenderSettings, smoothingMode: undefined });
+		const shouldMigrateInkResponse = inkRenderSettings.smoothingMode !== "pressure";
+		const shouldMigrateGentlePressure = inkRenderSettings.pressureResponse !== "gentle";
+		const shouldMigrateRoundGeometry = inkRenderSettings.strokeGeometry !== "round";
+		const shouldMigrateEdges = inkRenderSettings.edgeGeometryVersion !== 2;
+		const shouldMigrateInkModel = inkRenderSettings.inkModel !== "continuous-v1";
+		inkRenderSettings.inkModel = "continuous-v1";
+		inkRenderSettings.edgeGeometryVersion = 2;
+		const shouldMigrateNegativeSensitivity = inkRenderSettings.thinning < 0;
+		const shouldMigrateWidthSmoothing = inkRenderSettings.widthSmoothing === undefined;
+		const shouldMigrateWidthTracking = inkRenderSettings.widthSmoothingVersion !== 2;
+		inkRenderSettings.widthSmoothingVersion = 2;
+		if (shouldMigrateWidthSmoothing) inkRenderSettings.widthSmoothing = "extra-smooth";
+		inkRenderSettings.thinning = Math.abs(inkRenderSettings.thinning);
+		inkRenderSettings.smoothingMode = "pressure";
+		inkRenderSettings.pressureResponse = "gentle";
+		inkRenderSettings.strokeGeometry = "round";
 		if (shouldMigrateLegacyPressure && inkRenderSettings.pressureMode === "simulate") {
 			inkRenderSettings.pressureMode = "auto";
 		}
 		this.settings = {
+			quickAddPageSettings: normalizeQuickAddPageSettings(loaded?.quickAddPageSettings),
 			pressureCaptureVersion: 1,
 			toolDefaults: {
 				...DEFAULT_SETTINGS.toolDefaults,
@@ -101,10 +135,10 @@ export class PDFAnnotatorSettingsController {
 			inkInputPolicy: normalizeInkInputPolicy(loaded?.inkInputPolicy),
 			livePreviewMode: normalizeLivePreviewMode(loadedLivePreviewMode),
 			inkRenderSettings,
-			legacyInkRenderSettings: normalizeInkRenderSettings(loaded?.legacyInkRenderSettings ?? inkRenderSettings),
+			legacyInkRenderSettings,
 			autosaveDelayMs: typeof loaded?.autosaveDelayMs === "number" ? loaded.autosaveDelayMs : DEFAULT_SETTINGS.autosaveDelayMs
 		};
-		if (!loaded?.legacyInkRenderSettings || shouldMigrateLegacyPressure || shouldMigrateLegacyPreview || JSON.stringify(loaded?.presets ?? []) !== JSON.stringify(normalizedPresets)) {
+		if (!loaded?.legacyInkRenderSettings || shouldMigrateLegacyPressure || shouldMigrateLegacyPreview || shouldMigrateInkResponse || shouldMigrateGentlePressure || shouldMigrateRoundGeometry || shouldMigrateEdges || shouldMigrateInkModel || shouldMigrateNegativeSensitivity || shouldMigrateWidthSmoothing || shouldMigrateWidthTracking || JSON.stringify(loaded?.presets ?? []) !== JSON.stringify(normalizedPresets)) {
 			this.scheduleSave();
 		}
 	}
@@ -173,6 +207,10 @@ export class PDFAnnotatorSettingsController {
 		return this.settings.livePreviewMode;
 	}
 
+	getQuickAddPageSettings(): PDFAnnotatorSettings["quickAddPageSettings"] {
+		return { ...this.settings.quickAddPageSettings };
+	}
+
 	getInkRenderSettings(): InkRenderSettings {
 		return { ...this.settings.inkRenderSettings };
 	}
@@ -205,12 +243,18 @@ export class PDFAnnotatorSettingsController {
 			...this.settings,
 			...nextSettings
 		};
+		if (nextSettings.inkRenderSettings) {
+			this.settings.inkRenderSettings = normalizeInkRenderSettings(this.settings.inkRenderSettings);
+			this.settings.inkRenderSettings.thinning = Math.abs(this.settings.inkRenderSettings.thinning);
+		}
+		if (nextSettings.quickAddPageSettings) this.settings.quickAddPageSettings = normalizeQuickAddPageSettings(nextSettings.quickAddPageSettings);
 		this.scheduleSave();
 		this.onBehaviorChanged();
 	}
 
 	private createDefaultSettings(): PDFAnnotatorSettings {
 		return {
+			quickAddPageSettings: { ...DEFAULT_SETTINGS.quickAddPageSettings },
 			pressureCaptureVersion: DEFAULT_SETTINGS.pressureCaptureVersion,
 			toolDefaults: {
 				...DEFAULT_SETTINGS.toolDefaults,

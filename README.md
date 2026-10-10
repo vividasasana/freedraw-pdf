@@ -2,6 +2,16 @@
 
 Write and draw on PDFs in Obsidian. Freedraw PDF lets you add handwritten notes, highlights, text, and images, insert extra writing pages, and export an annotated copy. Your original PDF stays unchanged.
 
+## New in 0.13.6
+
+- **SVG ink:** continuous strokes with Pencil pressure and immediate scaling during PDF zoom.
+- **Easier controls:** grouped settings, finger panning across tools, and text selection retained when switching between Text and Select.
+- **Annotation file management:** recover saved JSON, combine missing strokes and saved variants, and clean copies or data for deleted PDFs. Choose a PDF, folder, or the whole vault with an editable path field and suggestions.
+- **Safer saving:** read-back verification and local checkpoints help detect failed writes and recover missing or older annotation data. Routine save notices are optional under **Debug → Action notices**.
+- **Quick-add pages:** reuse the previous temporary page style or choose configured template and paper-colour defaults.
+
+Defaults are **Smoothest** preview, **Linear** pressure, and debugging displays off. See the [0.13.6 notes](docs/releases/0.13.6.md). Local save protection does not confirm OneDrive delivery; iPad crashes and zoom issues still need device verification.
+
 ![Handwritten PDF annotations beside a live embed in an Obsidian note](docs/images/freedraw-pdf-annotated-embed-demo.png)
 
 The PDF is open on the left. On the right, an Obsidian note displays an annotated region from the same document.
@@ -19,7 +29,7 @@ The PDF is open on the left. On the right, an Obsidian note displays an annotate
 
 Freedraw PDF requires Obsidian 1.12.0 or later.
 
-1. Download the plugin ZIP from the [latest release](https://github.com/vividasasana/freedraw-pdf/releases/latest) and extract it. You can also download `main.js`, `manifest.json`, and `styles.css` individually.
+1. Download `main.js`, `manifest.json`, and `styles.css` from the [latest release](https://github.com/vividasasana/freedraw-pdf/releases/latest).
 2. In your vault, create the folder `.obsidian/plugins/freedraw-pdf`.
 3. Put those three files directly inside that folder.
 4. Reload Obsidian, then open **Settings → Community plugins** and enable **Freedraw PDF**.

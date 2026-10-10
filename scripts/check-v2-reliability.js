@@ -11,7 +11,7 @@ function load(name) {
  if (cache.has(filename)) return cache.get(filename).exports;
  const module = { exports: {} }; cache.set(filename, module);
  const code = ts.transpileModule(fs.readFileSync(filename, 'utf8'), {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText;
- vm.runInNewContext(code, {module,exports:module.exports,require:n=>n==='obsidian'?{TFile,Notice:class {}}:n.startsWith('.')?load(path.relative(root,path.resolve(path.dirname(filename),n+'.ts'))):require(n),console:{warn(){},error(){}},crypto:require('crypto').webcrypto,TextEncoder,Date,Math,Map,Set,WeakMap}, {filename});
+ vm.runInNewContext(code, {module,exports:module.exports,require:n=>n==='obsidian'?{TFile,AbstractInputSuggest:class{},Modal:class{open(){this.onClose();} contentEl={empty(){}}},Setting:class{},Notice:class {}}:n.startsWith('.')?load(path.relative(root,path.resolve(path.dirname(filename),n+'.ts'))):require(n),console:{warn(){},error(){}},crypto:require('crypto').webcrypto,TextEncoder,Date,Math,Map,Set,WeakMap}, {filename});
  return module.exports;
 }
 function deferred() { let resolve; const promise = new Promise(r=>resolve=r); return {promise,resolve}; }
@@ -20,8 +20,9 @@ async function main() {
  const {AnnotationStore,createEmptyDocument}=load('src/stores/annotationStore.ts');
  const a=makeFile('a.pdf'), b=makeFile('b.pdf');
  const disk=new Map([['a.pdf.annot.json','{ invalid']]);
- const adapter={exists:async p=>disk.has(p),read:async p=>disk.get(p),readBinary:async()=>new Uint8Array([1,2,3]).buffer,write:async(p,s)=>disk.set(p,s),remove:async p=>disk.delete(p),list:async()=>({files:[...disk.keys()]})};
- const store=new AnnotationStore({vault:{adapter}});
+ const trash=new Map();
+ const adapter={exists:async p=>disk.has(p)||p==='a.pdf'||p==='b.pdf'||p==='renamed.pdf',read:async p=>disk.get(p),readBinary:async()=>new Uint8Array([1,2,3]).buffer,write:async(p,s)=>disk.set(p,s),remove:async p=>disk.delete(p),trashLocal:async p=>{trash.set(p,disk.get(p));disk.delete(p);},list:async()=>({files:[...disk.keys()]})};
+ const store=new AnnotationStore({vault:{adapter,getAbstractFileByPath:()=>undefined}});
  await assert.rejects(()=>store.loadWithInfo(a),/annotation/i,'Unreadable annotations must never become an editable blank layer');
  assert.equal(disk.get('a.pdf.annot.json'),'{ invalid');
  disk.set('a.pdf.annot.json','{}');
@@ -29,7 +30,8 @@ async function main() {
  disk.clear();disk.set('b.pdf.annot.json',JSON.stringify(createEmptyDocument(b)));
  assert.equal((await store.loadWithInfo(a)).sidecarPath,null,'Byte size alone must not recover another PDF');
  await store.deleteForPdfPath('b.pdf');
- assert.ok(disk.has('b.pdf.annot.json'),'Trashing a PDF must preserve annotation recovery');
+ assert.ok(!disk.has('b.pdf.annot.json')&&trash.has('b.pdf.annot.json'),'Confirmed PDF-data cleanup must move annotations into recoverable trash');
+ disk.set('b.pdf.annot.json',trash.get('b.pdf.annot.json'));
  const first=await store.loadWithInfo(b), second=await store.loadWithInfo(b);
  first.document.textItems.push({id:'one',page:1,text:'first view'});
  await store.save(b,first.document);
@@ -53,7 +55,7 @@ async function main() {
  first.document.textItems.push({id:'three',page:1,text:'after rename'});
  await store.save(renamed,first.document);
  assert.equal(JSON.parse(disk.get('renamed.pdf.annot.json')).textItems.length,2);
- assert.ok(disk.has('b.pdf.annot.json'));
+ assert.ok(!disk.has('b.pdf.annot.json')&&trash.has('b.pdf.annot.json'),'Rename should remove the old sidecar into recoverable trash');
  const indexed = Object.assign(new TFile(),{path:'renamed.pdf.annot.json'});
  const concurrentStore=new AnnotationStore({vault:{adapter,getAbstractFileByPath:()=>indexed,process:async(_file,update)=>{disk.set(indexed.path,'concurrent edit');disk.set(indexed.path,update(disk.get(indexed.path)));}}});
  const concurrent=await concurrentStore.loadWithInfo(renamed);
@@ -64,11 +66,20 @@ async function main() {
  const code=ts.transpileModule('class Session {'+methods+'}\nglobalThis.Session=Session;', {compilerOptions:{target:ts.ScriptTarget.ES2020}}).outputText;
  const context={window:{clearTimeout(){}},console:{error(){}},Notice:class {},normalizeDocumentZIndexes:()=>false,normalizeDocumentStrokeScales:()=>false};
  vm.runInNewContext(code,context);
- function session(){const s=new context.Session();Object.assign(s,{file:a,annotationDocument:{strokes:['old']},isDirty:true,documentRevision:1,attachmentGeneration:0,savePromise:null,attachPromise:null,autosaveHandle:null,nextPageZIndexCache:new Map(),refreshStatus(){},bindSessionKeyListener(){},ensureUi(){},applyOverlayMode(){},invalidateAnnotationPageCache(){},getTemporarySidecarPageCount:()=>0,observePdfDom(){},bindNativePdfEvents(){},syncPages(){},refreshToolbar(){},showStartupError(){},commitActiveInkBeforeLayoutRefresh(){},finishSessionInlineTextEditor(){},closeTransientPopovers(){}});return s;}
+ function session(){const s=new context.Session();Object.assign(s,{file:a,annotationDocument:{strokes:['old']},isDirty:true,documentRevision:1,attachmentGeneration:0,savePromise:null,attachPromise:null,autosaveHandle:null,nextPageZIndexCache:new Map(),refreshStatus(){},refreshSaveState(){},bindSessionKeyListener(){},ensureUi(){},applyOverlayMode(){},invalidateAnnotationPageCache(){},getTemporarySidecarPageCount:()=>0,observePdfDom(){},bindNativePdfEvents(){},syncPages(){},refreshToolbar(){},showStartupError(){},commitActiveInkBeforeLayoutRefresh(){},finishSessionInlineTextEditor(){},closeTransientPopovers(){}});return s;}
  const s=session(), gate=deferred(), snapshots=[];
  s.store={save:async(f,d)=>{snapshots.push(JSON.stringify(d));if(snapshots.length===1)await gate.promise},getSidecarPath:f=>f.path};
  const saving=s.flushSave();s.annotationDocument.strokes.push('new');s.documentRevision++;s.isDirty=true;gate.resolve();await saving;
  assert.ok(snapshots.at(-1).includes('new'),'Save completion must include edits made during the write');
+ const merged=session();let mergeWrites=0,redraws=0;
+ merged.drawAllAnnotations=()=>redraws++;
+ merged.undoStack=[{kind:'document',document:{strokes:[]}}];merged.redoStack=[];merged.cloneStroke=s=>JSON.parse(JSON.stringify(s));
+ merged.store={save:async()=>++mergeWrites===1?[{id:'remote',points:[]}]:[],getSidecarPath:f=>f.path};
+ await merged.flushSave();
+ assert.equal(mergeWrites,2,'Merged remote additions must complete a fresh revision before showing Saved');
+ assert.equal(redraws,1,'Merged remote strokes must invalidate retained SVG frames');
+ assert.equal(merged.isDirty,false);
+ assert.equal(merged.undoStack[0].document.strokes[0].id,'remote','Local undo snapshots must retain remotely merged ink');
  const sw=session(), readGate=deferred(), writes=[];sw.getPdfFile=()=>b;
  sw.store={save:async(f,d)=>writes.push({path:f.path,strokes:[...d.strokes]}),loadWithInfo:async()=>readGate.promise,getSidecarPath:f=>f.path};
  const attaching=sw.attach();await sw.flushSave();readGate.resolve({document:{strokes:[]}});await attaching;

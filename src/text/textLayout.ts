@@ -85,7 +85,7 @@ export function resolveTextWordWrap(textItem: Pick<TextAnnotation, "wordWrap">):
 }
 
 export function applyCanvasTextStyle(
-	context: CanvasRenderingContext2D,
+	context: Pick<CanvasRenderingContext2D, "font" | "textAlign" | "textBaseline">,
 	textItem: Pick<TextAnnotation, "fontWeight" | "fontStyle" | "textAlign">,
 	fontSize: number,
 	fontFamily: string
@@ -269,7 +269,7 @@ export function getHorizontalTextCaretIndex(
 }
 
 export function getCanvasTextLines(
-	context: CanvasRenderingContext2D,
+	context: Pick<CanvasRenderingContext2D, "measureText">,
 	text: string,
 	maxWidth: number,
 	wordWrap = true
@@ -277,7 +277,7 @@ export function getCanvasTextLines(
 	return wordWrap ? getWrappedCanvasTextLines(context, text, maxWidth) : getTextLines(text);
 }
 
-export function getWrappedCanvasTextLines(context: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
+export function getWrappedCanvasTextLines(context: Pick<CanvasRenderingContext2D, "measureText">, text: string, maxWidth: number): string[] {
 	const lines: string[] = [];
 	const safeMaxWidth = Math.max(20, maxWidth);
 	for (const sourceLine of getTextLines(text)) {

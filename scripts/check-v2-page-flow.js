@@ -10,9 +10,9 @@ function sessionClass(names, globals = {}, className = 'NativePdfAnnotatorSessio
  return new context.Session();
 }
 const clamp=(v,min,max)=>Math.max(min,Math.min(max,v));
-const s=sessionClass(['insertTemplatePageAfterCurrent','getNativeInsertPageLocation','findSyntheticInsertIndexAfterPdfPage','findFirstSyntheticInsertIndexAfterPdfPage','getSyntheticPageInsertAfterPdfPage'],{clamp});
+const s=sessionClass(['insertTemplatePageAfterCurrent','insertTemplatePageAtLocation','getNativeInsertPageLocation','findSyntheticInsertIndexAfterPdfPage','findFirstSyntheticInsertIndexAfterPdfPage','getSyntheticPageInsertAfterPdfPage'],{clamp});
 const pages=[{id:'old',title:'Already after page 1',insertAfterPdfPage:1},{id:'end',insertAfterPdfPage:3}];
-Object.assign(s,{realPdfPageCount:3,currentPage:1,getAppendedPages:()=>pages,getSyntheticPageIndex:()=>-1,insertTemplatePageAtIndex:(index,anchor)=>pages.splice(index,0,{id:'new',insertAfterPdfPage:anchor})});
+Object.assign(s,{realPdfPageCount:3,currentPage:1,getAppendedPages:()=>pages,getSyntheticPageIndex:()=>-1,getQuickAddPageOptions:()=>({}),insertTemplatePageAtIndex:(index,anchor)=>pages.splice(index,0,{id:'new',title:'New page',insertAfterPdfPage:anchor})});
 s.insertTemplatePageAfterCurrent();
 assert.equal(pages[0].id,'new','Quick add after PDF 1 must be before existing added pages anchored to PDF 1');
 assert.equal(pages[0].insertAfterPdfPage,1);
@@ -32,7 +32,7 @@ class Menu {
 }
 const menuSession=sessionClass(['openAddPageMenu'],{Menu,PAPER_COLOR_PRESETS:[{color:'#ffffff',label:'White'}],getNotebookTemplateLabel:v=>v});
 let openedMenu,insertLocation,templateTarget;
-Object.assign(menuSession,{currentPage:1,syncCurrentPageForPageAction(){},getCurrentSyntheticPage:()=>null,getCurrentMixedPageOrdinal:()=>1,getMixedPageEntries:()=>[{},{}],getNativeInsertPageLocation:()=>({anchor:1,insertIndex:0}),getNativeInsertPageDefaults:()=>({template:'blank'}),canEditPdfPageTemplate:()=>true,getPdfPageTemplate:()=>({template:'blank',paperColor:'#ffffff'}),showExclusiveMenuAtPosition:menu=>openedMenu=menu,insertTemplatePageAtLocation:location=>insertLocation=location,openPdfPageTemplateMenu:page=>templateTarget=page});
+Object.assign(menuSession,{currentPage:1,syncCurrentPageForPageAction(){},getCurrentSyntheticPage:()=>null,getCurrentMixedPageOrdinal:()=>1,getMixedPageEntries:()=>[{},{}],getNativeInsertPageLocation:()=>({anchor:1,insertIndex:0}),getQuickAddPageOptions:()=>({template:'blank'}),canEditPdfPageTemplate:()=>true,getPdfPageTemplate:()=>({template:'blank',paperColor:'#ffffff'}),showExclusiveMenuAtPosition:menu=>openedMenu=menu,insertTemplatePageAtLocation:location=>insertLocation=location,openPdfPageTemplateMenu:page=>templateTarget=page});
 menuSession.openAddPageMenu({getBoundingClientRect:()=>({left:0,bottom:0})});
 assert.ok(openedMenu.items.some(item=>item.title==='Template: blank'),'Created PDF must expose template directly in Page menu');
 assert.ok(openedMenu.items.some(item=>item.title==='Paper: White'),'Created PDF must expose colour directly in Page menu');
@@ -44,9 +44,9 @@ assert.equal(templateTarget,1);
 
 const inkSource=fs.readFileSync(path.join(root,'src/ink/inkEngine.ts'),'utf8')+'\nexport {getRenderStrokePoints};';
 const inkModule={exports:{}};
-vm.runInNewContext(ts.transpileModule(inkSource,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText,{module:inkModule,exports:inkModule.exports,require,console});
+vm.runInNewContext(ts.transpileModule(inkSource,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText,{module:inkModule,exports:inkModule.exports,require:n=>n.startsWith('.')?require('./load-source').loadSource(path.join('src/ink',n+'.ts')):require(n),console});
 const ink=inkModule.exports;
-const samples=Array.from({length:35},(_,i)=>({x:.1+i*.006,y:.5+(i%2?.009:-.009),pressure:.5,t:i*8}));
+const samples=Array.from({length:35},(_,i)=>({x: 0.1+i*.006,y: 0.5+(i%2? 0.009:-.009),pressure: 0.5,t:i*8}));
 ink.setInkRenderSettings({streamline:0});
 assert.equal(ink.getRenderStrokePoints(samples,false),samples,'Zero stabilization must bypass path filtering');
 ink.setInkRenderSettings({streamline:1});
@@ -56,6 +56,7 @@ assert.equal(stabilized[0].x,samples[0].x);
 assert.equal(stabilized.at(-1).x,samples.at(-1).x);
 let cutOptions;
 const renderer=sessionClass(['drawReliablePdfStroke'],{drawSmoothInkStroke:(...args)=>cutOptions=args.at(-1)});
+renderer.plugin={getLivePreviewMode:()=> 'accurate'};
 renderer.drawReliablePdfStroke({}, {lastWidth:1000,lastHeight:1400}, {points:samples,cutStart:true,cutEnd:true},4,true,false,true,0);
 assert.equal(cutOptions.startCap,true,'Erased heads must be round');
 assert.equal(cutOptions.endCap,true,'Erased tails must be round');
