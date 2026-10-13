@@ -43,3 +43,15 @@ const arcPath=svg.records[0].node.attrs.d;
 assert.equal((arcPath.match(/ A /g)||[]).length,2,'SVG must subdivide the intended long anticlockwise arc');
 assert.ok(arcPath.includes('-10'),'A long cap must pass through the back of its circle, matching Canvas');
 console.log(`Continuous ink passed: endpoints, time independence, bounded pressure peaks, live/save/zoom parity, tiny strokes and compatibility. samples=${g.samples.length}; fast=${fast.samples.length}`);
+
+// Bounded chunks use the same interval samples as the full continuous fitter.
+const {buildContinuousInkGeometry} = loadSource('src/ink/continuousInkGeometry.ts');
+const longPoints=Array.from({length:320},(_,i)=>({x:.5+Math.sin(i*.1)*.2,y:.5+Math.cos(i*.08)*.2,pressure:.5+Math.sin(i*.17)*.4}));
+for(const [start,end] of [[0,64],[64,128],[192,256],[256,319]]) {
+ const from=Math.max(0,start-3),to=Math.min(longPoints.length,end+4);
+ const expected=buildContinuousInkGeometry(longPoints,1000,1400,8,true,settings,{}, {start,end});
+ const chunk=buildContinuousInkGeometry(longPoints.slice(from,to),1000,1400,8,true,settings,{}, {start:start-from,end:end-from});
+ assert.equal(JSON.stringify(chunk.samples),JSON.stringify(expected.samples),'Chunk boundaries must preserve curve tangents and Pencil pressure');
+ assert.equal(JSON.stringify(chunk.pieces),JSON.stringify(expected.pieces),'Chunk joins must match the full continuous geometry');
+}
+console.log('Long-stroke chunk geometry matches full curve intervals exactly.');

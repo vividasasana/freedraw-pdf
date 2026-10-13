@@ -204,8 +204,10 @@ class BlankAnnotatablePdfModal extends Modal {
 		paperColor: "#ffffff"
 	};
 
-	constructor(app: App, private readonly onSubmit: (options: BlankAnnotatablePdfOptions) => void) {
+	constructor(app: App, defaults: Pick<BlankAnnotatablePdfOptions, "template" | "paperColor">, private readonly onSubmit: (options: BlankAnnotatablePdfOptions) => void) {
 		super(app);
+		this.options.template = defaults.template;
+		this.options.paperColor = defaults.paperColor;
 		this.titleEl.setText("Create annotatable PDF");
 		this.modalEl.addClass("pdf-native-annotator-native-modal");
 	}
@@ -275,7 +277,7 @@ class BlankAnnotatablePdfModal extends Modal {
 		};
 		new Setting(contentEl).setName("Paper colour")
 			.addDropdown(dropdown => {
-				PAPER_COLOR_PRESETS.forEach(preset => dropdown.addOption(preset.color, preset.label));
+				PAPER_COLOR_PRESETS.forEach(preset => { dropdown.addOption(preset.color, preset.label); });
 				syncPaperDropdown = color => {
 					if (!Array.from(dropdown.selectEl.options).some(option => option.value === color)) dropdown.addOption(color, "Custom colour");
 					dropdown.setValue(color);
@@ -285,7 +287,7 @@ class BlankAnnotatablePdfModal extends Modal {
 			})
 			.addColorPicker(picker => {
 				picker.setValue(this.options.paperColor).onChange(selectPaperColor);
-				syncPaperPicker = color => picker.setValue(color);
+				syncPaperPicker = color => { picker.setValue(color); };
 			});
 
 		contentEl.createDiv("modal-button-container", (buttonContainer) => {
@@ -377,7 +379,7 @@ class NativeInsertPageModal extends Modal {
 		};
 		new Setting(contentEl).setName("Paper colour")
 			.addDropdown(dropdown => {
-				PAPER_COLOR_PRESETS.forEach(preset => dropdown.addOption(preset.color, preset.label));
+				PAPER_COLOR_PRESETS.forEach(preset => { dropdown.addOption(preset.color, preset.label); });
 				syncPaperDropdown = color => {
 					if (!Array.from(dropdown.selectEl.options).some(option => option.value === color)) dropdown.addOption(color, "Custom colour");
 					dropdown.setValue(color);
@@ -387,7 +389,7 @@ class NativeInsertPageModal extends Modal {
 			})
 			.addColorPicker(picker => {
 				picker.setValue(this.options.paperColor).onChange(selectPaperColor);
-				syncPaperPicker = color => picker.setValue(color);
+				syncPaperPicker = color => { picker.setValue(color); };
 			});
 
 		contentEl.createDiv("modal-button-container", (buttonContainer) => {
@@ -474,6 +476,9 @@ type TransientPopoverKey = "stroke" | "color" | "font" | "paper-color" | "confir
 class NativePdfAnnotatorSession {
 	private selectionBackground: { key: string; canvas: HTMLCanvasElement } | null = null;
 	private publishedFrames = new WeakMap<HTMLCanvasElement, string>();
+	private renderRevision = 0;
+	private motionPreviewHandle: number | null = null;
+	private annotationPageRevisions = new Map<number, number>();
 	private readonly ownerDocument: Document;
 	private readonly ownerWindow: typeof window;
 	private file: TFile | null = null;
@@ -566,6 +571,7 @@ class NativePdfAnnotatorSession {
 	private pendingInteractionRedrawPages = new Set<number>();
 	private pendingCommittedRedrawPages = new Set<number>();
 	private strokePathCache = new Map<string, { signature: string; outline: InkStrokeOutline }>();
+	private strokePointHashCache = new WeakMap<StrokeAnnotation, { points: StrokeAnnotation["points"]; count: number; first: StrokeAnnotation["points"][number] | undefined; last: StrokeAnnotation["points"][number] | undefined; hash: number }>();
 	private pageRenderSlots = new Map<number, PageRenderSlotPool>();
 	private snapshotCanvases = new Set<HTMLCanvasElement>();
 	private svgRenderer = new SvgAnnotationRenderer();
@@ -806,7 +812,7 @@ class NativePdfAnnotatorSession {
 				this.refreshSaveState("failed", error instanceof Error ? error.message : "Annotation save failed");
 				console.error("freedraw-pdf: failed to save", error);
 				new Notice(error instanceof Error ? error.message : "Could not save PDF annotations.");
-				this.refreshStatus(error instanceof Error ? `Unsaved changes — ${error.message}` : "Unsaved changes — save failed", 12000);
+				this.refreshStatus(error instanceof Error ? `Unsaved changes â€” ${error.message}` : "Unsaved changes â€” save failed", 12000);
 				await this.preserveFailedSave(file, document);
 				if (error instanceof Error && /Annotation data changed/.test(error.message)) {
 					try {
@@ -1291,9 +1297,15 @@ class NativePdfAnnotatorSession {
 		const defaults = this.getNativeInsertPageDefaults("after", location);
 		const settings = this.plugin.getQuickAddPageSettings();
 		const pages = this.getAppendedPages();
-		const previous = this.getCurrentSyntheticPage() ?? pages[location.insertIndex - 1] ?? pages[pages.length - 1];
-		const inherit = settings.source === "previous" ? previous : undefined;
-		return { ...defaults, template: inherit?.template ?? settings.template, paperColor: inherit?.paperColor ?? settings.paperColor };
+		const document = this.annotationDocument;
+		const inherit = document?.latestPageStyle ?? pages[pages.length - 1] ??
+			(document?.nativePageTemplatesEditable ? document.pdfPageTemplates?.[document.pdfPageTemplates.length - 1] : undefined);
+		return { ...defaults, template: inherit?.template ?? settings.template,
+			paperColor: inherit?.paperColor ?? settings.paperColor, pageSize: inherit?.pageSize ?? defaults.pageSize };
+	}
+
+	private recordLatestPageStyle(style: Pick<PdfPageTemplate, "template" | "paperColor" | "pageSize">): void {
+		if (this.annotationDocument) this.annotationDocument.latestPageStyle = { template: style.template, paperColor: style.paperColor, pageSize: style.pageSize };
 	}
 
 	private getNativeInsertPageLocation(position: "before" | "after"): NativeInsertPageLocation {
@@ -2815,6 +2827,7 @@ class NativePdfAnnotatorSession {
 		if (!isDomNode(record.target)) {
 			return true;
 		}
+		if (this.isOwnedAnnotatorDom(record.target)) return false;
 		if (record.type === "childList") {
 			const changedNodes = [...Array.from(record.addedNodes), ...Array.from(record.removedNodes)];
 			return changedNodes.some((node) => !this.isOwnedAnnotatorDom(node));
@@ -2837,10 +2850,12 @@ class NativePdfAnnotatorSession {
 			return true;
 		}
 		const element = isDomElement(target) ? target : target.parentElement;
-		return !!element?.closest(".pdf-native-annotator-synthetic-pages, .pdf-native-annotator-synthetic-page, .pdf-native-annotator-overlay, .pdf-native-annotator-vector, .pdf-native-annotator-transient, .pdf-native-annotator-template-background, .pdf-native-annotator-native-page-entry, .pdf-native-annotator-native-page-footer");
+		return !!element?.closest(".pdf-native-annotator-synthetic-pages, .pdf-native-annotator-synthetic-page, .pdf-native-annotator-overlay, .pdf-native-annotator-vector, .pdf-native-annotator-transient, .pdf-native-annotator-template-background, .pdf-native-annotator-native-page-entry, .pdf-native-annotator-native-page-footer, [data-freedraw-layer], .freedraw-pdf-scroll-preview");
 	}
 
 	private destroyObservers(): void {
+		this.svgRenderer?.hideMotionPreviews?.();
+		if (this.motionPreviewHandle !== null) { this.ownerWindow.clearTimeout(this.motionPreviewHandle); this.motionPreviewHandle = null; }
 		this.finishFingerPan(false);
 		this.cancelFingerPanInertia();
 		if (this.syncHandle !== null) {
@@ -3960,6 +3975,7 @@ class NativePdfAnnotatorSession {
 		}
 		this.pushHistory();
 		pageTemplate.template = template;
+		this.recordLatestPageStyle(pageTemplate);
 		this.markDirtyAndRedraw(`Template changed to ${getNotebookTemplateLabel(template)}`);
 		this.refreshSyntheticPages(pageNumber);
 		this.drawPageAnnotations(pageNumber);
@@ -3976,6 +3992,7 @@ class NativePdfAnnotatorSession {
 		}
 		this.pushHistory();
 		pageTemplate.paperColor = color;
+		this.recordLatestPageStyle(pageTemplate);
 		this.markDirtyAndRedraw("Paper color changed");
 		this.refreshSyntheticPages(pageNumber);
 		this.drawPageAnnotations(pageNumber);
@@ -4023,6 +4040,8 @@ class NativePdfAnnotatorSession {
 		this.scrollIdleHandle = this.ownerWindow.setTimeout(() => {
 			this.scrollIdleHandle = null;
 			this.isPdfScrolling = false;
+			this.svgRenderer?.hideMotionPreviews?.();
+			this.scheduleMotionPreviewPreparation();
 			this.updateCurrentPageFromScroll();
 			if (this.needsToolbarRefreshAfterScroll) {
 				this.needsToolbarRefreshAfterScroll = false;
@@ -4158,7 +4177,7 @@ class NativePdfAnnotatorSession {
 	private getPageFrameKey(surface: PageSurface): string {
 		// Vector geometry already scales through its viewBox. Zoom alone does not
 		// invalidate a committed frame or require reprocessing every stroke.
-		return JSON.stringify([this.documentRevision, surface.vectorEl ? "vector" : [surface.lastWidth, surface.lastHeight, this.ownerWindow.devicePixelRatio], this.selectedTargets, this.inlineTextTargetId, this.inlineTextPageNumber, this.lastSelectionRegion, this.focusedRegion]);
+		return JSON.stringify([this.renderRevision ?? 0, this.annotationPageRevisions?.get(surface.pageNumber) ?? 0, surface.vectorEl ? "vector" : [surface.lastWidth, surface.lastHeight, this.ownerWindow.devicePixelRatio], this.selectedTargets, this.inlineTextTargetId, this.inlineTextPageNumber, this.lastSelectionRegion, this.focusedRegion]);
 	}
 
 	private forceRedrawVisibleAnnotations(): void {
@@ -4703,6 +4722,7 @@ class NativePdfAnnotatorSession {
 	}
 
 	private pauseCommittedRenderingForInkInput(): void {
+		this.svgRenderer?.hideMotionPreviews?.();
 		this.lastInkInputTimestamp = performance.now();
 		this.queueInterruptedPageRenders();
 		this.cancelPageRenderJobs("cancelled by pointer input");
@@ -4756,6 +4776,8 @@ class NativePdfAnnotatorSession {
 		}
 		for (const pageNumber of this.pageSurfaces.keys()) {
 			if (this.shouldKeepPageHot(pageNumber)) {
+				const surface = this.pageSurfaces.get(pageNumber);
+				if (surface?.vectorEl) this.svgRenderer.showMotionPreview?.(surface.vectorEl);
 				this.pendingRedrawPages.add(pageNumber);
 			}
 		}
@@ -4772,6 +4794,7 @@ class NativePdfAnnotatorSession {
 	}
 
 	private resumeCommittedRenderingAfterFingerPan(): void {
+		if (!this.isViewportMotionActive()) { this.svgRenderer?.hideMotionPreviews?.(); this.scheduleMotionPreviewPreparation(); }
 		if (this.isViewportMotionActive() || !this.annotationDocument || this.redrawHandle !== null) {
 			return;
 		}
@@ -4831,7 +4854,7 @@ class NativePdfAnnotatorSession {
 		for (const [pageNumber, surface] of this.pageSurfaces.entries()) {
 			const hot = this.shouldKeepPageHot(pageNumber);
 			surface.overlayEl.setCssStyles({ visibility: "visible" });
-			if (!hot && (surface.overlayEl.width > 1 || surface.transientEl.width > 1 || this.pageRenderSlots.has(pageNumber))) {
+			if (!hot && (surface.overlayEl.width > 1 || surface.transientEl.width > 1 || this.pageRenderSlots.has(pageNumber) || !!surface.vectorEl && this.svgRenderer.hasCommittedFrame(surface.vectorEl))) {
 				this.releasePageCanvasResources(pageNumber);
 			}
 			const wasHot = previousRange
@@ -6677,6 +6700,7 @@ class NativePdfAnnotatorSession {
 		}
 		this.pushHistory();
 		page.template = template;
+		this.recordLatestPageStyle(page);
 		this.markDirtyAndRedraw(`Template changed to ${template}`);
 		this.refreshSyntheticPages(this.currentPage);
 	}
@@ -6688,6 +6712,7 @@ class NativePdfAnnotatorSession {
 		}
 		this.pushHistory();
 		page.pageSize = pageSize;
+		this.recordLatestPageStyle(page);
 		this.markDirtyAndRedraw(`Page size changed to ${pageSize}`);
 		this.refreshSyntheticPages(this.currentPage);
 	}
@@ -6702,6 +6727,7 @@ class NativePdfAnnotatorSession {
 		}
 		this.pushHistory();
 		target.page.template = template;
+		this.recordLatestPageStyle(target.page);
 		this.markDirtyAndRedraw(`Template changed to ${getNotebookTemplateLabel(template)}`);
 		this.refreshSyntheticPages(target.pageNumber);
 	}
@@ -6717,6 +6743,7 @@ class NativePdfAnnotatorSession {
 		}
 		this.pushHistory();
 		target.page.pageSize = pageSize;
+		this.recordLatestPageStyle(target.page);
 		this.markDirtyAndRedraw(`Page size changed to ${getNotebookPageSizeLabel(pageSize)}`);
 		this.refreshSyntheticPages(target.pageNumber);
 	}
@@ -6732,6 +6759,7 @@ class NativePdfAnnotatorSession {
 		}
 		this.pushHistory();
 		target.page.paperColor = color;
+		this.recordLatestPageStyle(target.page);
 		this.markDirtyAndRedraw("Paper color changed");
 		this.refreshSyntheticPages(target.pageNumber);
 	}
@@ -7615,6 +7643,7 @@ class NativePdfAnnotatorSession {
 			this.pushHistory();
 		}
 		page.paperColor = color;
+		this.recordLatestPageStyle(page);
 		this.markDirtyAndRedraw("Paper color changed");
 		this.refreshSyntheticPages(this.currentPage);
 	}
@@ -9790,6 +9819,7 @@ class NativePdfAnnotatorSession {
 			return;
 		}
 		event.preventDefault();
+		this.svgRenderer?.hideMotionPreviews?.();
 		const isInkInput = isInkDrawingTool(this.currentTool);
 		if (isInkInput) {
 			canvas.setCssStyles({ touchAction: "none" });
@@ -10561,6 +10591,10 @@ class NativePdfAnnotatorSession {
 			return;
 		}
 
+		const committedSurface = this.pageSurfaces.get(pageNumber);
+		const canRetainCommittedFrame = !!committedSurface?.vectorEl &&
+			this.svgRenderer.hasCommittedFrame(committedSurface.vectorEl) &&
+			this.publishedFrames.get(committedSurface.overlayEl) === this.getPageFrameKey(committedSurface);
 		this.freezeCurrentStrokeAtRenderedFrame();
 		const committedPreviewStroke = this.currentStroke;
 		const committedPreviewShape = this.currentShape;
@@ -10576,12 +10610,14 @@ class NativePdfAnnotatorSession {
 			if (this.plugin.shouldShowDrawingNotices()) this.refreshStatus(`Stroke recorded (${pointCount} points, ${this.annotationDocument.strokes.length} strokes)`, 900);
 			else this.refreshStatus("Saving annotations", 900);
 		}
-		this.invalidateAnnotationPageCache();
+		this.invalidateAnnotationPageCache(pageNumber);
 		this.documentRevision += 1;
 		this.isDirty = true;
 		this.scheduleSave();
 		if (committedPreviewStroke || committedPreviewShape) {
 			this.promoteCurrentTransientPreview(pageNumber);
+			this.scheduleMotionPreviewPreparation();
+			if (committedPreviewStroke && canRetainCommittedFrame && committedSurface) this.publishedFrames.set(committedSurface.overlayEl, this.getPageFrameKey(committedSurface));
 		}
 		this.currentStroke = null;
 		this.currentStrokeRenderedPointCount = 0;
@@ -11001,8 +11037,17 @@ class NativePdfAnnotatorSession {
 		}
 	}
 
-	private invalidateAnnotationPageCache(): void {
-		this.publishedFrames = new WeakMap();
+	private invalidateAnnotationPageCache(pageNumber?: number): void {
+		if (pageNumber === undefined) this.svgRenderer?.invalidateMotionPreviews?.();
+		else { const root = this.pageSurfaces?.get(pageNumber)?.vectorEl; if (root) this.svgRenderer?.invalidateMotionPreviews?.(root); }
+		if (pageNumber === undefined) {
+			this.renderRevision = (this.renderRevision ?? 0) + 1;
+			this.annotationPageRevisions?.clear();
+			this.publishedFrames = new WeakMap();
+		} else {
+			this.annotationPageRevisions ??= new Map();
+			this.annotationPageRevisions.set(pageNumber, (this.annotationPageRevisions.get(pageNumber) ?? 0) + 1);
+		}
 		this.annotationPageCache = null;
 		if (!this.annotationDocument) {
 			this.strokePathCache.clear();
@@ -11330,7 +11375,30 @@ class NativePdfAnnotatorSession {
 
 	private publishSvgDrawingContext(surface: PageSurface, context: SvgDrawingContext, live = false): void {
 		this.svgRenderer.publish(context, live);
+		if (!live) this.scheduleMotionPreviewPreparation();
 		surface.overlayEl?.setCssStyles({ opacity: "0" });
+	}
+
+	private scheduleMotionPreviewPreparation(): void {
+		if (!this.ownerWindow?.setTimeout) return;
+		if (typeof this.motionPreviewHandle === "number") this.ownerWindow.clearTimeout(this.motionPreviewHandle);
+		this.motionPreviewHandle = this.ownerWindow.setTimeout(() => {
+			this.motionPreviewHandle = null;
+			void this.prepareMotionPreviews().catch(() => { /* A preview failure keeps SVG. */ });
+		}, 1200);
+	}
+	private async prepareMotionPreviews(): Promise<void> {
+		if (this.savePromise || performance.now() - this.lastInkInputTimestamp < 1000) { this.scheduleMotionPreviewPreparation(); return; }
+		let prepared = 0;
+		for (const pageNumber of prioritizeRenderPages([...this.pageSurfaces.keys()], this.currentPage, null)) {
+			if (this.inlineTextEditorEl || this.hasActiveTransientRender() || this.isViewportMotionActive()) return;
+			const surface = this.pageSurfaces.get(pageNumber);
+			if (!surface?.vectorEl || !this.shouldKeepPageHot(pageNumber) || this.publishedFrames.get(surface.overlayEl) !== this.getPageFrameKey(surface)) continue;
+			const available = await this.svgRenderer.prepareMotionPreview(surface.vectorEl, () =>
+				this.pageSurfaces.get(pageNumber) === surface && !this.inlineTextEditorEl && !this.hasActiveTransientRender() && !this.isViewportMotionActive() &&
+				this.publishedFrames.get(surface.overlayEl) === this.getPageFrameKey(surface));
+			if (available && ++prepared >= 2) return;
+		}
 	}
 
 	private getLivePreviewPredictionStrength(): number {
@@ -11364,10 +11432,16 @@ class NativePdfAnnotatorSession {
 	): void {
 		if (context instanceof SvgDrawingContext) {
 			context.setKey(`stroke:${stroke.id}`);
+			if (livePreview) {
+				const widthScale = this.resolveStoredScale(stroke.width, stroke.widthScale, MAX_STROKE_WIDTH_SCALE);
+				if (context.drawLiveContinuousStroke(stroke, Math.max(0.75, widthScale * surface.lastWidth), this.plugin.getLivePreviewMode() === "fast")) return;
+			}
 			if (!livePreview && !predictTail) {
 				const widthScale = this.resolveStoredScale(stroke.width, stroke.widthScale, MAX_STROKE_WIDTH_SCALE);
 				const signature = this.getStrokePathSignature(surface, stroke, Math.max(0.75, widthScale * surface.lastWidth), stroke.tool !== "highlighter") + `:${stroke.color}:${stroke.tool}`;
-				context.drawCachedStroke(stroke, signature, () => this.paintStroke(context, surface, stroke, predictTail, livePreview, predictionStrength));
+				context.drawCachedStroke(stroke, signature, () => {
+					if (!context.reuseLiveContinuousStroke(stroke, Math.max(0.75, widthScale * surface.lastWidth))) this.paintStroke(context, surface, stroke, predictTail, livePreview, predictionStrength);
+				});
 				return;
 			}
 		}
@@ -11455,14 +11529,24 @@ class NativePdfAnnotatorSession {
 		baseWidth: number,
 		usePressure: boolean
 	): string {
-		let pointHash = 2166136261;
-		for (const point of stroke.points) {
-			pointHash ^= Math.round(point.x * 100000);
-			pointHash = Math.imul(pointHash, 16777619);
-			pointHash ^= Math.round(point.y * 100000);
-			pointHash = Math.imul(pointHash, 16777619);
-			pointHash ^= Math.round(point.pressure * 1000);
-			pointHash = Math.imul(pointHash, 16777619);
+		// Committed geometry is replaced on move/resize/erase. General edits also
+		// clear this memo in pushHistory(), so redraws can reuse unchanged point hashes.
+		const points = stroke.points, first = points[0], last = points[points.length - 1];
+		const cached = this.strokePointHashCache.get(stroke);
+		let pointHash: number;
+		if (stroke !== this.currentStroke && cached?.points === points && cached.count === points.length && cached.first === first && cached.last === last) {
+			pointHash = cached.hash;
+		} else {
+			pointHash = 2166136261;
+			for (const point of stroke.points) {
+				pointHash ^= Math.round(point.x * 100000);
+				pointHash = Math.imul(pointHash, 16777619);
+				pointHash ^= Math.round(point.y * 100000);
+				pointHash = Math.imul(pointHash, 16777619);
+				pointHash ^= Math.round(point.pressure * 1000);
+				pointHash = Math.imul(pointHash, 16777619);
+			}
+			this.strokePointHashCache.set(stroke, { points, count: points.length, first, last, hash: pointHash });
 		}
 		return [
 			surface.lastWidth.toFixed(1),
@@ -12648,6 +12732,7 @@ class NativePdfAnnotatorSession {
 	}
 
 	private pushHistory(): void {
+		this.strokePointHashCache = new WeakMap();
 		if (!this.annotationDocument) {
 			return;
 		}
@@ -12685,6 +12770,9 @@ class NativePdfAnnotatorSession {
 			this.ownerWindow.clearTimeout(this.autosaveHandle);
 		}
 		this.autosaveHandle = this.ownerWindow.setTimeout(() => {
+			this.autosaveHandle = null;
+			// Serializing and checking a dense sidecar must not interrupt live input.
+			if (this.hasActiveTransientRender()) { this.scheduleSave(); return; }
 			void this.flushSave();
 		}, this.plugin.getAutosaveDelayMs());
 	}
@@ -12830,7 +12918,7 @@ class NativePdfAnnotatorSession {
 	}
 
 	private refreshSaveState(phase: "pending" | "saving" | "saved" | "failed", error?:string): void {
-		const labels = {pending:"Unsaved changes",saving:"Saving locally…",saved:"Saved locally",failed:"NOT SAVED"};
+		const labels = {pending:"Unsaved changes",saving:"Saving locallyâ€¦",saved:"Saved locally",failed:"NOT SAVED"};
 		if (this.plugin.shouldShowDrawingNotices() || phase === "failed") this.refreshStatus(error || labels[phase], phase === "failed" ? 0 : 1500);
 		if (this.file && typeof CustomEvent !== "undefined") this.ownerDocument.dispatchEvent(new CustomEvent("freedraw-pdf-save-state",{
 			detail:{path:this.store.getSidecarPath(this.file),phase,error}
@@ -13104,7 +13192,7 @@ export default class PDFAnnotatorPlugin extends Plugin {
 	}
 
 	openBlankAnnotatablePdfModal(): void {
-		new BlankAnnotatablePdfModal(this.app, (options) => {
+		new BlankAnnotatablePdfModal(this.app, this.getQuickAddPageSettings(), (options) => {
 			void this.createBlankAnnotatablePdf(options);
 		}).open();
 	}
@@ -13153,6 +13241,7 @@ export default class PDFAnnotatorPlugin extends Plugin {
 			const pdfFile = await this.app.vault.createBinary(path, pdfBuffer);
 			const annotationDocument = createEmptyDocument(pdfFile);
 			annotationDocument.nativePageTemplatesEditable = true;
+			annotationDocument.latestPageStyle = { template: options.template, paperColor: options.paperColor, pageSize: options.pageSize };
 			annotationDocument.pdfPageTemplates = Array.from({ length: pageCount }, (_, index) => ({
 				page: index + 1,
 				template: options.template,

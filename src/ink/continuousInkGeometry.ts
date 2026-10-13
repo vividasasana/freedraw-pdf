@@ -14,7 +14,7 @@ function pressureRadius(pressure: number, size: number, usePressure: boolean, se
 }
 
 /** Continuous tangents and monotone pressure widths, independent of event timestamps. */
-export function buildContinuousInkGeometry(points: RoundInkPoint[], width: number, height: number, baseWidth: number, usePressure: boolean, settings: InkRenderSettings, options: RoundInkOptions = {}): RoundedInkGeometry {
+export function buildContinuousInkGeometry(points: RoundInkPoint[], width: number, height: number, baseWidth: number, usePressure: boolean, settings: InkRenderSettings, options: RoundInkOptions = {}, range?: { start: number; end: number }): RoundedInkGeometry {
 	if (!points.length) return { samples: [], controlRadii: [], pieces: [] };
 	const scale = 1524 / Math.max(1, width), size = Math.max(.1, baseWidth * scale);
 	const raw = points.map(p => ({ x: p.x * width * scale, y: p.y * height * scale, radius: pressureRadius(p.pressure, size, usePressure, settings) }));
@@ -57,9 +57,10 @@ export function buildContinuousInkGeometry(points: RoundInkPoint[], width: numbe
 		const magnitude = Math.hypot(x, y);
 		return magnitude > 1e-8 ? { x: x / magnitude, y: y / magnitude } : { x: 0, y: 0 };
 	});
-	const samples: RoundInkSample[] = [{ ...controls[0] }];
+	const startSegment = range?.start ?? 0, endSegment = range?.end ?? lengths.length;
+	const samples: RoundInkSample[] = [{ ...controls[startSegment] }];
 	const tolerance = Math.max(.015, size * (options.previewQuality === "fast" ? .04 : .008));
-	for (let i = 0; i < lengths.length; i++) {
+	for (let i = startSegment; i < endSegment; i++) {
 		const a = controls[i], b = controls[i + 1], length = lengths[i];
 		if (length < 1e-8) {
 			// Keep a changing force at a stationary contact without duplicate disks.

@@ -242,8 +242,9 @@ export class AnnotationStore {
 		let device = "local";
 		try {
 			const key = "freedraw-pdf-checkpoint-device";
-			device = globalThis.localStorage.getItem(key) || generateId("device");
-			globalThis.localStorage.setItem(key, device);
+			const storage = app.workspace.containerEl.ownerDocument.defaultView?.localStorage;
+			device = storage?.getItem(key) || generateId("device");
+			storage?.setItem(key, device);
 		} catch { /* Checkpoints remain available when device storage is unavailable. */ }
 		this.checkpointDevice = pathHash(device);
 	}
@@ -425,6 +426,7 @@ export class AnnotationStore {
 						pageSize: pageTemplate.pageSize ?? "a4"
 					}))
 					: [],
+				latestPageStyle: parsed.latestPageStyle && ["blank", "ruled", "grid", "dot"].includes(parsed.latestPageStyle.template) && typeof parsed.latestPageStyle.paperColor === "string" && /^#[0-9a-f]{6}$/i.test(parsed.latestPageStyle.paperColor) && ["a4", "letter", "compact", "long"].includes(parsed.latestPageStyle.pageSize) ? { template: parsed.latestPageStyle.template, paperColor: parsed.latestPageStyle.paperColor, pageSize: parsed.latestPageStyle.pageSize } : undefined,
 				nativePageTemplatesEditable: typeof parsed.nativePageTemplatesEditable === "boolean"
 					? parsed.nativePageTemplatesEditable
 					: undefined,

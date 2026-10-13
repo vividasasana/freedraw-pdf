@@ -1843,6 +1843,7 @@
 }
 
 .freedraw-pdf-settings .freedraw-pdf-settings-section-heading {
+	border: 0;
 	margin: 0;
 	padding: 0 var(--freedraw-settings-inset);
 	font-size: var(--font-ui-medium);
@@ -2080,3 +2081,12 @@
 		grid-template-columns: repeat(3, 44px);
 	}
 }
+
+.freedraw-pdf-settings-section-heading .setting-item-control { display: none; }
+.freedraw-pdf-settings-section-heading .setting-item-info { margin: 0; }
+
+.freedraw-pdf-quick-add-note .setting-item-control { display: none; }
+
+svg.pdf-native-annotator-vector > .freedraw-pdf-scroll-preview { display: none; pointer-events: none; }
+svg.pdf-native-annotator-vector > .freedraw-pdf-scroll-preview.is-active { display: block; }
+svg.pdf-native-annotator-vector > .freedraw-pdf-scroll-preview-hidden { display: none; }

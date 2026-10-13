@@ -24,7 +24,7 @@ function normalizeColor(value: unknown, fallback: string): string {
 function normalizeQuickAddPageSettings(value: unknown): PDFAnnotatorSettings["quickAddPageSettings"] {
 	const raw = value && typeof value === "object" ? value as Partial<PDFAnnotatorSettings["quickAddPageSettings"]> : {};
 	return {
-		source: raw.source === "defaults" ? "defaults" : "previous",
+		source: "previous",
 		template: raw.template === "blank" || raw.template === "grid" || raw.template === "dot" || raw.template === "ruled" ? raw.template : DEFAULT_SETTINGS.quickAddPageSettings.template,
 		paperColor: normalizeColor(raw.paperColor, DEFAULT_SETTINGS.quickAddPageSettings.paperColor)
 	};

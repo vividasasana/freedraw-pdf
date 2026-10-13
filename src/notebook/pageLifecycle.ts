@@ -53,6 +53,7 @@ export function insertSyntheticPage(
 	document.shapes = shiftPages(document.shapes, pageNumber, 1);
 	document.imageItems = shiftPages(document.imageItems!, pageNumber, 1);
 	pages.splice(boundedIndex, 0, page);
+	if (page.kind === "template") document.latestPageStyle = { template: page.template, paperColor: page.paperColor, pageSize: page.pageSize };
 	return pageNumber;
 }
 

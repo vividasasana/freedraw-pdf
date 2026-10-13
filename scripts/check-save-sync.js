@@ -27,7 +27,9 @@ async function main() {
  synced.sourcePdf.ctime = 999;
  synced.sourcePdf.mtime = 999;
  disk.set('paper.pdf.annot.json', JSON.stringify(Object.fromEntries(Object.entries(synced).reverse())));
+ document.latestPageStyle={template:'grid',paperColor:'#0000ff',pageSize:'letter'};
  await store.save(file, document);
+ assert.equal(JSON.stringify((await store.load(file)).latestPageStyle),JSON.stringify(document.latestPageStyle),'Most recent page style must survive actual sidecar save/load');
  assert.equal((await store.load(file)).strokes.length, 1, 'A harmless sync rewrite must not leave visible strokes unsaved');
  const editing = await store.load(file);
  const remote = JSON.parse(disk.get('paper.pdf.annot.json'));

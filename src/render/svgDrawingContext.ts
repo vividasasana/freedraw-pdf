@@ -1,3 +1,6 @@
+import { ScrollPreviewCache } from "./scrollPreviewCache";
+import { buildContinuousInkGeometry } from "../ink/continuousInkGeometry";
+import { fillRoundedInkGeometry } from "../ink/inkEngine";
 import { isEmbeddedImageDataUrl } from "../utils/imageData";
 import type { StrokeAnnotation } from "../types";
 
@@ -6,12 +9,14 @@ interface PaintRecord {
 	node: SVGElement;
 }
 interface StrokeCacheEntry { signature: string; records: PaintRecord[]; }
+interface LiveStrokeEntry { signature: string; node: SVGGElement; tail: SVGElement | null; end: number; count: number; points: StrokeAnnotation["points"]; lastPoint: StrokeAnnotation["points"][number] | null; }
 interface LayerState {
 	body: SVGGElement;
 	live: SVGGElement;
 	bodyRecords: Map<string, PaintRecord>;
 	liveRecords: Map<string, PaintRecord>;
 	cache: WeakMap<StrokeAnnotation, StrokeCacheEntry>;
+	liveCache: WeakMap<StrokeAnnotation, LiveStrokeEntry>;
 	width: number;
 	height: number;
 	mask?: SVGDefsElement;
@@ -43,7 +48,7 @@ export class SvgDrawingContext {
 		font: string; textAlign: CanvasTextAlign; textBaseline: CanvasTextBaseline; dash: number[];
 	}> = [];
 
-	constructor(readonly root: SVGSVGElement, readonly width: number, readonly height: number, private readonly cache: WeakMap<StrokeAnnotation, StrokeCacheEntry>) {
+	constructor(readonly root: SVGSVGElement, readonly width: number, readonly height: number, private readonly cache: WeakMap<StrokeAnnotation, StrokeCacheEntry>, private readonly liveCache = new WeakMap<StrokeAnnotation, LiveStrokeEntry>()) {
 		const ownerWindow = root.ownerDocument.defaultView;
 		if (!ownerWindow) { throw new Error("SVG annotation window is unavailable."); }
 		this.fragment = ownerWindow.createFragment();
@@ -57,6 +62,51 @@ export class SvgDrawingContext {
 		draw();
 		this.cache.set(stroke, { signature, records: this.records.slice(start) });
 	}
+	/** Keep stable curve intervals in the DOM; only fit a bounded recent tail. */
+	drawLiveContinuousStroke(stroke: StrokeAnnotation, baseWidth: number, fast: boolean): boolean {
+		const settings = stroke.inkSettings;
+		// Taper depends on total stroke length, so retain the full fitter for that case.
+		if (settings?.inkModel !== "continuous-v1" || settings.taperStart !== 0 || settings.taperEnd !== 0 || stroke.points.length < 2) return false;
+		const signature = `${this.width}:${this.height}:${baseWidth}:${stroke.color}:${stroke.tool}:${fast}:${JSON.stringify(settings)}`;
+		let entry = this.liveCache.get(stroke);
+		if (!entry || entry.signature !== signature || entry.points !== stroke.points || stroke.points.length < entry.count) {
+			entry = { signature, node: this.fragment.createSvg("g", { attr: { opacity: stroke.tool === "highlighter" ? 0.24 : 0.96 } }), tail: null, end: 0, count: 0, points: stroke.points, lastPoint: null };
+			this.liveCache.set(stroke, entry);
+		}
+		const fit = (start: number, end: number): SVGElement | null => {
+			// Three neighbouring raw points cover denoising, tangent and width-slope dependencies.
+			const from = Math.max(0, start - 3), to = Math.min(stroke.points.length, end + 4);
+			const geometry = buildContinuousInkGeometry(stroke.points.slice(from, to), this.width, this.height, baseWidth,
+				stroke.tool !== "highlighter", settings, { previewQuality: fast ? "fast" : undefined }, { start: start - from, end: end - from });
+			const drawing = new SvgDrawingContext(this.root, this.width, this.height, this.cache);
+			drawing.fillStyle = stroke.color;
+			// Opacity belongs to the parent group: joins and crossings must not darken.
+			fillRoundedInkGeometry(drawing, geometry);
+			return drawing.records[0]?.node ?? null;
+		};
+		const last = stroke.points.length - 1;
+		if (entry.count !== stroke.points.length || entry.lastPoint !== stroke.points[last]) {
+			entry.tail?.remove();
+			while (entry.end + 64 + 3 <= last) {
+				const node = fit(entry.end, entry.end + 64);
+				if (node) entry.node.appendChild(node);
+				entry.end += 64;
+			}
+			entry.tail = fit(entry.end, last);
+			if (entry.tail) entry.node.appendChild(entry.tail);
+			entry.count = stroke.points.length;
+			entry.lastPoint = stroke.points[last];
+		}
+		this.add(entry.node);
+		return true;
+	}
+
+	// Finishing a stroke can reuse its exact accurate preview, avoiding a full
+	// synchronous curve rebuild at Pencil lift. Fast previews still rebuild accurately.
+	reuseLiveContinuousStroke(stroke: StrokeAnnotation, baseWidth: number): boolean {
+		return this.liveCache.has(stroke) && this.drawLiveContinuousStroke(stroke, baseWidth, false);
+	}
+
 	save(): void {
 		this.stack.push({ lineCap: this.lineCap, lineJoin: this.lineJoin, lineWidth: this.lineWidth,
 			fillStyle: this.fillStyle, strokeStyle: this.strokeStyle, globalAlpha: this.globalAlpha,
@@ -104,7 +154,7 @@ export class SvgDrawingContext {
 	private paintPath(stroke: boolean): void {
 		if (this.path.length === 0 || this.path.some(value => typeof value === "number" && !Number.isFinite(value))) { return; }
 		const node = this.fragment.createSvg("path", { attr: {
-			d: this.path.join(" "), fill: stroke ? "none" : String(this.fillStyle), "fill-rule": "nonzero",
+			d: this.path.map(value => typeof value === "number" ? Math.round(value * 1000) / 1000 : value).join(" "), fill: stroke ? "none" : String(this.fillStyle), "fill-rule": "nonzero",
 			stroke: stroke ? String(this.strokeStyle) : "none", "stroke-width": this.lineWidth,
 			"stroke-linecap": this.lineCap, "stroke-linejoin": this.lineJoin,
 			"stroke-dasharray": this.dash.length ? this.dash.join(" ") : "none", opacity: this.globalAlpha
@@ -145,6 +195,15 @@ let nextMaskId = 0;
 
 export class SvgAnnotationRenderer {
 	private readonly layers = new WeakMap<SVGSVGElement, LayerState>();
+	private readonly scrollPreviews = new ScrollPreviewCache();
+	prepareMotionPreview(root: SVGSVGElement, isCurrent: () => boolean): Promise<boolean> {
+		const state = this.layers.get(root);
+		if (!state || state.mask || state.bodyRecords.size < 80) return Promise.resolve(false);
+		return this.scrollPreviews.prepare(root, state.body, state.width, state.height, isCurrent);
+	}
+	showMotionPreview(root: SVGSVGElement): boolean { return this.scrollPreviews.show(root); }
+	hideMotionPreviews(): void { this.scrollPreviews.hideAll(); }
+	invalidateMotionPreviews(root?: SVGSVGElement): void { if (root) this.scrollPreviews.invalidate(root); else this.scrollPreviews.clear(); }
 	hasCommittedFrame(root: SVGSVGElement): boolean {
 		const state = this.layers.get(root);
 		return !!state && state.width > 0 && state.height > 0;
@@ -152,13 +211,14 @@ export class SvgAnnotationRenderer {
 	private state(root: SVGSVGElement): LayerState {
 		let state = this.layers.get(root);
 		if (!state) {
-			state = { body: root.createSvg("g"), live: root.createSvg("g"), bodyRecords: new Map(), liveRecords: new Map(), cache: new WeakMap(), width: 0, height: 0 };
+			state = { body: root.createSvg("g", { attr: { "data-freedraw-layer": "body" } }), live: root.createSvg("g", { attr: { "data-freedraw-layer": "live" } }), bodyRecords: new Map(), liveRecords: new Map(), cache: new WeakMap(), liveCache: new WeakMap(), width: 0, height: 0 };
 			this.layers.set(root, state);
 		}
 		return state;
 	}
-	create(root: SVGSVGElement, width: number, height: number): SvgDrawingContext { return new SvgDrawingContext(root, width, height, this.state(root).cache); }
+	create(root: SVGSVGElement, width: number, height: number): SvgDrawingContext { return new SvgDrawingContext(root, width, height, this.state(root).cache, this.state(root).liveCache); }
 	publish(frame: SvgDrawingContext, live = false): void {
+		if (!live) this.scrollPreviews.invalidate(frame.root);
 		const state = this.state(frame.root);
 		if (!live || state.width === 0) {
 			state.width = frame.width; state.height = frame.height;
@@ -180,8 +240,9 @@ export class SvgAnnotationRenderer {
 		}
 		if (live) { state.liveRecords = next; } else { state.bodyRecords = next; }
 	}
-	clearLive(root: SVGSVGElement): void { const state = this.layers.get(root); state?.live.replaceChildren(); state?.liveRecords.clear(); }
+	clearLive(root: SVGSVGElement): void { const state = this.layers.get(root); state?.live.replaceChildren(); state?.liveRecords.clear(); if (state) state.liveCache = new WeakMap(); }
 	promote(root: SVGSVGElement): void {
+		this.scrollPreviews.invalidate(root);
 		const state = this.layers.get(root);
 		if (!state) { return; }
 		// Keep the live coordinate system during a pending zoom replacement.
@@ -192,6 +253,7 @@ export class SvgAnnotationRenderer {
 		state.liveRecords.clear();
 	}
 	erase(root: SVGSVGElement, pageWidth: number, pageHeight: number, start: { x: number; y: number }, end: { x: number; y: number }, radius: number): void {
+		this.scrollPreviews.invalidate(root);
 		const state = this.state(root);
 		if (!state.mask) {
 			state.mask = root.createSvg("defs");
@@ -213,5 +275,5 @@ export class SvgAnnotationRenderer {
 			fill: "none", stroke: "black", "stroke-width": radius * 2 * state.width / Math.max(pageWidth, 1), "stroke-linecap": "round" } });
 		void pageHeight;
 	}
-	release(root: SVGSVGElement): void { root.replaceChildren(); this.layers.delete(root); }
+	release(root: SVGSVGElement): void { this.scrollPreviews.invalidate(root); root.replaceChildren(); this.layers.delete(root); }
 }

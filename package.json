@@ -46,5 +46,8 @@
   },
   "dependencies": {
     "perfect-freehand": "^1.2.3"
+  },
+  "overrides": {
+    "moment": "2.31.0"
   }
 }

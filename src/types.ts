@@ -303,6 +303,7 @@ export interface AnnotationDocument {
 	shapes: ShapeAnnotation[];
 	imageItems?: ImageAnnotation[];
 	pdfPageTemplates?: PdfPageTemplate[];
+	latestPageStyle?: Pick<PdfPageTemplate, "template" | "paperColor" | "pageSize">;
 	nativePageTemplatesEditable?: boolean;
 	appendedPages?: NotebookPage[];
 	deletedPdfPages?: number[];

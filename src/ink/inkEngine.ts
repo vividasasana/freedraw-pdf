@@ -569,7 +569,7 @@ export function getRoundedInkStrokeGeometry(points: InkPoint[], width: number, h
 	return buildRoundedInkGeometry(prepared, width, height, baseWidth, usePressure, settings, options);
 }
 
-function fillRoundedInkGeometry(context: InkDrawingContext, geometry: RoundedInkGeometry): void {
+export function fillRoundedInkGeometry(context: InkDrawingContext, geometry: RoundedInkGeometry): void {
 	context.beginPath();
 	for (const piece of geometry.pieces) {
 		if (piece.kind === "tube") {

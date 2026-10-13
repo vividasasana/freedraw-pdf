@@ -18,6 +18,7 @@ const checks = [
 	"check-smooth-edges.js",
 	"check-continuous-ink.js",
 	"check-vector-display.js",
+	"check-svg-precision.js",
 	"check-vector-zoom.js",
 	"check-input-policy.js",
 	"check-issue-2.js",
@@ -34,10 +35,17 @@ const checks = [
 	"check-release-hygiene.js",
 	"check-v2-reliability.js",
 	"check-save-sync.js",
+	"check-saved-stroke-scaling.js",
+	"check-scroll-frame-retention.js",
+	"check-scroll-preview-cache.js",
+	"check-cold-svg-eviction.js",
+	"check-owned-svg-mutations.js",
+	"check-input-save-priority.js",
 	"check-v2-interactions.js",
 	"check-v2-rendering.js",
 	"check-v2-page-flow.js",
 	"check-quick-add-pages.js",
+	"check-create-pdf-defaults.js",
 	"check-settings-ux.js",
 	"check-file-tree-picker.js",
 	"check-pan-text-handoff.js",
@@ -45,7 +53,7 @@ const checks = [
 	"check-v2-stroke-settings.js",
 	"check-v2-privacy.js"
 ];
-if (existsSync(path.join(projectRoot, "main.js"))) checks.push("check-built-plugin.js");
+if (existsSync(path.join(projectRoot, "main.js"))) checks.push("check-built-plugin.js", "check-long-stroke-preview.js");
 
 for (const check of checks) {
 	const result = spawnSync(process.execPath, [path.join(__dirname, check)], {

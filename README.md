@@ -7,8 +7,10 @@ Write and draw on PDFs in Obsidian. Freedraw PDF lets you add handwritten notes,
 - **SVG ink:** continuous strokes with Pencil pressure and immediate scaling during PDF zoom.
 - **Easier controls:** grouped settings, finger panning across tools, and text selection retained when switching between Text and Select.
 - **Annotation file management:** recover saved JSON, combine missing strokes and saved variants, and clean copies or data for deleted PDFs. Choose a PDF, folder, or the whole vault with an editable path field and suggestions.
+- **Scrolling previews:** dense annotation pages can use bounded cached images during scrolling, then return to sharp SVG when motion stops. Previews are prepared while idle and discarded when annotations change.
 - **Safer saving:** read-back verification and local checkpoints help detect failed writes and recover missing or older annotation data. Routine save notices are optional under **Debug → Action notices**.
-- **Quick-add pages:** reuse the previous temporary page style or choose configured template and paper-colour defaults.
+- **Quick-add pages:** the first added page uses your template and paper-colour defaults; later pages follow the most recently created or restyled page anywhere in that PDF. Changing an earlier page updates the next page style too. Plugin-created PDFs start with their own paper style.
+- **Paper defaults:** new annotatable PDFs start with your configured template and paper colour. Choose a colour preset beside the custom picker in settings; both controls stay in sync.
 
 Defaults are **Smoothest** preview, **Linear** pressure, and debugging displays off. See the [0.13.6 notes](docs/releases/0.13.6.md). Local save protection does not confirm OneDrive delivery; iPad crashes and zoom issues still need device verification.
 

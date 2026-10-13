@@ -1,0 +1,6 @@
+const fs=require('node:fs'),ts=require('typescript'),vm=require('node:vm'),assert=require('node:assert/strict');
+const source=fs.readFileSync(require('node:path').resolve(__dirname,'../main.ts'),'utf8'),tree=ts.createSourceFile('main.ts',source,ts.ScriptTarget.Latest,true);
+const cls=tree.statements.find(n=>ts.isClassDeclaration(n)&&n.name?.text==='NativePdfAnnotatorSession');
+const methods=cls.members.filter(n=>['scheduleSave','hasActiveTransientRender'].includes(n.name?.getText(tree))).map(n=>n.getText(tree)).join('\n');
+const ctx={};vm.runInNewContext(ts.transpileModule('class Session{'+methods+'}globalThis.Session=Session;',{compilerOptions:{target:ts.ScriptTarget.ES2020}}).outputText,ctx);
+const s=new ctx.Session();let callback,saves=0;Object.assign(s,{currentStroke:{},autosaveHandle:null,plugin:{getAutosaveDelayMs:()=>600},ownerWindow:{setTimeout:fn=>{callback=fn;return 1;},clearTimeout(){}},refreshSaveState(){},flushSave(){saves++;}});s.scheduleSave();callback();assert.equal(saves,0,'Automatic whole-document saving must yield to active Pencil input');s.currentStroke=null;callback();assert.equal(saves,1,'Saving must resume once ink input finishes');console.log('Autosave yields to active input and resumes after it.');

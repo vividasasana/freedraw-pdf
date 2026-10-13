@@ -44,3 +44,7 @@ test-vault/
 /downloads/
 /annotation-sync-guard/
 build-info.json
+
+# Personal vault provisioning is not plugin source.
+/new-vault-setup/
+/vault-integration/

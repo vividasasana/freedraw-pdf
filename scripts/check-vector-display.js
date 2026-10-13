@@ -38,7 +38,7 @@ const vector = fs.existsSync(vectorPath) ? load(vectorPath) : { SvgDrawingContex
 const source = fs.readFileSync(path.join(root, "main.ts"), "utf8");
 const tree = ts.createSourceFile("main.ts", source, ts.ScriptTarget.Latest, true);
 const sessionClass = tree.statements.find(node => ts.isClassDeclaration(node) && node.name?.text === "NativePdfAnnotatorSession");
-const names = ["drawTransientPageAnnotations", "createSvgDrawingContext", "publishSvgDrawingContext", "getLivePreviewPredictionStrength"];
+const names = ["scheduleMotionPreviewPreparation", "drawTransientPageAnnotations", "createSvgDrawingContext", "publishSvgDrawingContext", "getLivePreviewPredictionStrength"];
 const members = sessionClass.members.filter(member => names.includes(member.name?.getText(tree)));
 const globals = { ...vector, console };
 vm.runInNewContext(ts.transpileModule(`class Session {${members.map(member => member.getText(tree)).join("\n")}}globalThis.Session=Session;`, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText, globals);

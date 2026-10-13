@@ -1,11 +1,12 @@
 import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
-import { TOOL_WIDTH_RANGES } from "../config";
+import { PAPER_COLOR_PRESETS, TOOL_WIDTH_RANGES } from "../config";
 import type { InkEasingMode, InkInputPolicy, InkPressureMode, InkRenderSettings, LivePreviewMode, PDFAnnotatorSettings, ToolPreset, ToolStateSnapshot } from "../types";
 
 type SettingDefinitionCompat = {
 	name: string;
 	desc?: string;
 	render: (setting: Setting) => void;
+	visible?: () => boolean;
 };
 
 export interface PDFAnnotatorSettingsHost {
@@ -37,8 +38,7 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 		super(app, plugin);
 	}
 
-	// Keep these rows internal: getSettingDefinitions is an Obsidian rendering
-	// hook that can bypass display() and flatten the section layout.
+	// Share row renderers between searchable groups and the pre-1.13 fallback.
 	private buildSettingRows(): SettingDefinitionCompat[] {
 		return [
 			{
@@ -350,20 +350,50 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 
 	private getQuickAddPageSettingDefinitions(): SettingDefinitionCompat[] {
 		const update = async (patch: Partial<PDFAnnotatorSettings["quickAddPageSettings"]>) => {
-			await this.plugin.updateBehaviorSettings({ quickAddPageSettings: { ...this.plugin.getQuickAddPageSettings(), ...patch } });
+			await this.plugin.updateBehaviorSettings({ quickAddPageSettings: { ...this.plugin.getQuickAddPageSettings(), ...patch, source: "previous" } });
 		};
 		return [
-			{ name: "Quick-add style source", render: setting => setting.setName("Quick-add style source")
-				.setDesc("Copy the previous temporary page's template and colour in this PDF, or choose Configured defaults to set them. With no temporary page yet, your saved defaults are used.")
-				.addDropdown(dropdown => dropdown.addOption("previous", "Previous temporary page").addOption("defaults", "Configured defaults")
-					.setValue(this.plugin.getQuickAddPageSettings().source).onChange(async value => { await update({ source: value === "defaults" ? "defaults" : "previous" }); this.syncQuickAddDefaultFields(); })) },
-			{ name: "Quick-add template", render: setting => setting.setName("Default template")
-				.setDesc("Template for configured defaults, or when this PDF has no previous temporary page.")
+
+			{ name: "Quick-add template", render: setting => { setting.setName("Default template")
+				.setDesc("Template used for new annotatable PDFs and the first added page.")
 				.addDropdown(dropdown => dropdown.addOption("blank", "Blank").addOption("ruled", "Ruled").addOption("grid", "Grid").addOption("dot", "Dotted")
-					.setValue(this.plugin.getQuickAddPageSettings().template).onChange(value => update({ template: value as PDFAnnotatorSettings["quickAddPageSettings"]["template"] }))) },
-			{ name: "Quick-add paper colour", render: setting => setting.setName("Default paper colour")
-				.setDesc("Paper colour for configured defaults, or when no previous temporary page exists.")
-				.addColorPicker(picker => picker.setValue(this.plugin.getQuickAddPageSettings().paperColor).onChange(value => update({ paperColor: value }))) }
+					.setValue(this.plugin.getQuickAddPageSettings().template).onChange(value => update({ template: value as PDFAnnotatorSettings["quickAddPageSettings"]["template"] }))); } },
+			{ name: "Quick-add paper colour", render: setting => {
+				let syncDropdown: ((color: string) => void) | undefined;
+				let syncPicker: ((color: string) => void) | undefined;
+				const selectColor = async (color: string): Promise<void> => {
+					syncDropdown?.(color);
+					syncPicker?.(color);
+					await update({ paperColor: color });
+				};
+				setting.setName("Default paper colour")
+					.setDesc("Paper colour used for new annotatable PDFs and the first added page.")
+					.addDropdown(dropdown => {
+						PAPER_COLOR_PRESETS.forEach(preset => { dropdown.addOption(preset.color, preset.label); });
+						let customOption: HTMLOptionElement | null = null;
+						syncDropdown = color => {
+							const preset = PAPER_COLOR_PRESETS.find(entry => entry.color.toLowerCase() === color.toLowerCase());
+							if (!preset) {
+								if (customOption) customOption.value = color;
+								else {
+									dropdown.addOption(color, "Custom colour");
+									customOption = Array.from(dropdown.selectEl.options).find(option => option.value === color) ?? null;
+								}
+							}
+							dropdown.setValue(preset?.color ?? color);
+						};
+						syncDropdown(this.plugin.getQuickAddPageSettings().paperColor);
+						dropdown.onChange(selectColor);
+					})
+					.addColorPicker(picker => {
+						picker.setValue(this.plugin.getQuickAddPageSettings().paperColor).onChange(selectColor);
+						syncPicker = color => { picker.setValue(color); };
+					});
+			} },
+			{ name: "Automatic page style", render: setting => {
+				setting.setName("").setDesc("The first page uses these defaults. Later pages follow the latest template or colour change anywhere in this PDF.");
+				setting.settingEl.addClass("freedraw-pdf-quick-add-note");
+			} }
 		];
 	}
 
@@ -441,12 +471,63 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 
 	private renderSettingsSection(containerEl: HTMLElement, name: string): HTMLElement {
 		const section = containerEl.createEl("section", { cls: "freedraw-pdf-settings-section" });
-		section.createEl("h3", { text: name, cls: "freedraw-pdf-settings-section-heading" });
+		const heading = new Setting(section).setName(name).setHeading();
+		heading.settingEl.addClass("freedraw-pdf-settings-section-heading");
 		return section.createDiv({ cls: "freedraw-pdf-settings-group" });
 	}
 
 	private syncQuickAddDefaultFields(): void {
-		if (this.quickAddDefaultsEl) this.quickAddDefaultsEl.hidden = this.plugin.getQuickAddPageSettings().source !== "defaults";
+		if (this.quickAddDefaultsEl) this.quickAddDefaultsEl.hidden = false;
+		// 1.13+ updates visibility in place, preserving focus and scroll.
+		const tab = this as PluginSettingTab & { refreshDomState?: () => void };
+		tab.refreshDomState?.();
+	}
+
+	private getFileManagementRows(): SettingDefinitionCompat[] {
+		return [
+			{ name: "Recover annotations from JSON", render: setting => { setting.setName("Recover annotations from JSON")
+			.setDesc("Replace the active PDF's annotation layer with an earlier copy from the same folder. Current data is backed up. Use Combine JSON to add missing strokes.")
+			.addButton(button => button.setButtonText("Choose recovery").onClick(() => this.plugin.restoreActiveAnnotationData())); } },
+			{ name: "Combine annotation JSON files", render: setting => { setting.setName("Combine annotation JSON files")
+			.setDesc("Choose one PDF, a folder, or the whole vault. Add missing strokes, keeping different versions as separate stacked strokes. Combined recovery copies move to trash after saving.")
+			.addButton(button => button.setButtonText("Combine JSON").onClick(async () => {
+				button.setDisabled(true);
+				try { await this.plugin.cleanAnnotationFiles(false); } finally { button.setDisabled(false); }
+			})); } },
+			{ name: "Remove data for deleted PDFs", render: setting => { setting.setName("Remove data for deleted PDFs")
+			.setDesc("Remove leftover annotation and recovery JSONs whose PDF is missing. Starts with the whole vault; you can limit it to a folder or PDF. You confirm before files move to trash.")
+			.addButton(button => button.setButtonText("Clean deleted PDFs").onClick(async () => {
+				button.setDisabled(true);
+				try { await this.plugin.cleanAnnotationFiles(true); } finally { button.setDisabled(false); }
+			})); } }
+		];
+	}
+
+	// Structural compatibility keeps the minimum supported API at 1.12.
+	// Obsidian 1.13+ renders and indexes these native groups; older versions use display().
+	getSettingDefinitions(): { type: "group"; heading: string; cls: string; items: SettingDefinitionCompat[] }[] {
+		const rows = new Map([...this.buildSettingRows(), ...this.getFileManagementRows()].map(row => [row.name, row]));
+		for (const name of ["Quick-add template", "Quick-add paper colour", "Automatic page style"]) {
+			const row = rows.get(name);
+			if (row) row.visible = () => true;
+		}
+		const groups: [string, string[]][] = [
+			["Drawing input", ["Finger input", "Stroke preview"]],
+			["Pen pressure", ["Pressure input", "Stroke width response", "Pressure curve"]],
+			["Stroke smoothing", ["Stabilization", "Width smoothing mode", "Stroke smoothing"]],
+			["Tool sizes", ["Pen width", "Highlighter width", "Eraser size"]],
+			["Stroke ends", ["Taper start", "Taper end"]],
+			["Pages / Quick add", ["Quick-add template", "Quick-add paper colour", "Automatic page style"]],
+			["Toolbar", ["Toolbar placement", "Region capture button", "Copy embed button"]],
+			["Markdown embeds", ["Automatic region embed copy", "Embed controls"]],
+			["Saving", ["Save delay"]],
+			["File management", ["Recover annotations from JSON", "Combine annotation JSON files", "Remove data for deleted PDFs"]],
+			["Debug", ["Action notices", "Rendering diagnostics"]]
+		];
+		return groups.map(([heading, names]) => ({
+			type: "group", heading, cls: "freedraw-pdf-settings-native-group",
+			items: names.map(name => rows.get(name)).filter((row): row is SettingDefinitionCompat => !!row)
+		}));
 	}
 
 	display(): void {
@@ -464,29 +545,15 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 		renderSection("Stroke smoothing", ["Stabilization", "Width smoothing mode", "Stroke smoothing"]);
 		renderSection("Tool sizes", ["Pen width", "Highlighter width", "Eraser size"]);
 		renderSection("Stroke ends", ["Taper start", "Taper end"]);
-		const pages = renderSection("Pages / Quick add", ["Quick-add style source"]);
+		const pages = renderSection("Pages / Quick add", []);
 		this.quickAddDefaultsEl = pages.createDiv({ cls: "freedraw-pdf-quick-add-defaults" });
-		this.renderSettingDefinitions(this.quickAddDefaultsEl, definitions, ["Quick-add template", "Quick-add paper colour"]);
+		this.renderSettingDefinitions(this.quickAddDefaultsEl, definitions, ["Quick-add template", "Quick-add paper colour", "Automatic page style"]);
 		this.syncQuickAddDefaultFields();
 		renderSection("Toolbar", ["Toolbar placement", "Region capture button", "Copy embed button"]);
 		renderSection("Markdown embeds", ["Automatic region embed copy", "Embed controls"]);
 		renderSection("Saving", ["Save delay"]);
 		const files = this.renderSettingsSection(containerEl, "File management");
-		new Setting(files).setName("Recover annotations from JSON")
-			.setDesc("Replace the active PDF's annotation layer with an earlier copy from the same folder. Current data is backed up. Use Combine JSON to add missing strokes.")
-			.addButton(button => button.setButtonText("Choose recovery").onClick(() => this.plugin.restoreActiveAnnotationData()));
-		new Setting(files).setName("Combine annotation JSON files")
-			.setDesc("Choose one PDF, a folder, or the whole vault. Add missing strokes, keeping different versions as separate stacked strokes. Combined recovery copies move to trash after saving.")
-			.addButton(button => button.setButtonText("Combine JSON").onClick(async () => {
-				button.setDisabled(true);
-				try { await this.plugin.cleanAnnotationFiles(false); } finally { button.setDisabled(false); }
-			}));
-		new Setting(files).setName("Remove data for deleted PDFs")
-			.setDesc("Remove leftover annotation and recovery JSONs whose PDF is missing. Starts with the whole vault; you can limit it to a folder or PDF. You confirm before files move to trash.")
-			.addButton(button => button.setButtonText("Clean deleted PDFs").onClick(async () => {
-				button.setDisabled(true);
-				try { await this.plugin.cleanAnnotationFiles(true); } finally { button.setDisabled(false); }
-			}));
+		for (const row of this.getFileManagementRows()) row.render(new Setting(files));
 		renderSection("Debug", ["Action notices", "Rendering diagnostics"]);
 	}
 }

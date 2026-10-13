@@ -31,7 +31,7 @@ async function main(){
  await fresh.updateBehaviorSettings({quickAddPageSettings:{source:'defaults',template:'grid',paperColor:'#abc123'}});
  for(const fn of timers.splice(0))await fn();
  const freshAgain=new PDFAnnotatorSettingsController(async()=>quickSaved,async()=>{},()=>{});await freshAgain.load();
- assert.equal(JSON.stringify(freshAgain.getQuickAddPageSettings()),JSON.stringify({source:'defaults',template:'grid',paperColor:'#abc123'}),'Quick-add preferences must persist after restart');
+ assert.equal(JSON.stringify(freshAgain.getQuickAddPageSettings()),JSON.stringify({source:'previous',template:'grid',paperColor:'#abc123'}),'Quick-add preferences must persist after restart');
  fresh.dispose();freshAgain.dispose();timers.splice(0);
  for (const [stored,expected] of [['smooth','auto-smooth'],['quality','auto-smooth'],['balanced','accurate'],['fast','fast'],['accurate','accurate'],['auto-smooth','auto-smooth']]) {
   let migration;
@@ -113,7 +113,7 @@ async function main(){
  let publishedOptions;
  const context={getSmoothInkStrokeOutline:ink.getSmoothInkStrokeOutline,drawSmoothInkStroke:(...args)=>publishedOptions=args.at(-1),fillInkStrokeOutline(){}};
  vm.runInNewContext(ts.transpileModule('class Session {'+methods+'}globalThis.Session=Session;',{compilerOptions:{target:ts.ScriptTarget.ES2020}}).outputText,context);
- const session=new context.Session();session.strokePathCache=new Map();session.plugin={getLivePreviewMode:()=> 'accurate'};
+ const session=new context.Session();session.strokePathCache=new Map();session.strokePointHashCache=new WeakMap();session.plugin={getLivePreviewMode:()=> 'accurate'};
  const surface={lastWidth:1000,lastHeight:1400},stroke=opened.document.strokes[0];
  assert.deepEqual(session.getCachedStrokeOutline(surface,stroke,5,true,false),before,'Committed canvas must use the stored settings');
  session.drawReliablePdfStroke({},surface,stroke,5,true,false,true,0);
