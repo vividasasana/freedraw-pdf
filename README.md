@@ -2,7 +2,7 @@
 
 Write and draw on PDFs in Obsidian. Freedraw PDF lets you add handwritten notes, highlights, text, and images, insert extra writing pages, and export an annotated copy. Your original PDF stays unchanged.
 
-## New in 0.13.6
+## New in 0.13.7
 
 - **SVG ink:** continuous strokes with Pencil pressure and immediate scaling during PDF zoom.
 - **Easier controls:** grouped settings, finger panning across tools, and text selection retained when switching between Text and Select.
@@ -12,7 +12,7 @@ Write and draw on PDFs in Obsidian. Freedraw PDF lets you add handwritten notes,
 - **Quick-add pages:** the first added page uses your template and paper-colour defaults; later pages follow the most recently created or restyled page anywhere in that PDF. Changing an earlier page updates the next page style too. Plugin-created PDFs start with their own paper style.
 - **Paper defaults:** new annotatable PDFs start with your configured template and paper colour. Choose a colour preset beside the custom picker in settings; both controls stay in sync.
 
-Defaults are **Smoothest** preview, **Linear** pressure, and debugging displays off. See the [0.13.6 notes](docs/releases/0.13.6.md). Local save protection does not confirm OneDrive delivery; iPad crashes and zoom issues still need device verification.
+Defaults are **Smoothest** preview, **Linear** pressure, and debugging displays off. See the [0.13.7 notes](docs/releases/0.13.7.md). Local save protection does not confirm OneDrive delivery; iPad crashes and zoom issues still need device verification.
 
 ![Handwritten PDF annotations beside a live embed in an Obsidian note](docs/images/freedraw-pdf-annotated-embed-demo.png)
 

@@ -2,9 +2,9 @@
 
 ## Current device status
 
-The user requested the continuous engine and retained-SVG zoom handling together after the temporary rollback, then authorized regular publication through the Vida Sana account. Version 0.13.6 is a regular release, and 0.13.6 sets Smoothest/Linear/debugging-off defaults and hides engine diagnostics unless enabled. Earlier iPad feedback reported severe lag, crashes, disappearing PDFs, and lost zoom alignment; these device-level failures have not been established as resolved. Automated checks cover continuous geometry and retained zoom separately.
+The user requested the continuous engine and retained-SVG zoom handling together after the temporary rollback, then authorized regular publication through the Vida Sana account. Version 0.13.7 is a regular release, and 0.13.7 sets Smoothest/Linear/debugging-off defaults and hides engine diagnostics unless enabled. Earlier iPad feedback reported severe lag, crashes, disappearing PDFs, and lost zoom alignment; these device-level failures have not been established as resolved. Automated checks cover continuous geometry and retained zoom separately.
 
-Handwriting changes prepared for release 0.13.6, developed through local previews based on 0.13.5.
+Handwriting changes prepared for release 0.13.7, developed through local previews based on 0.13.5.
 
 The 2026-10-07 SVG preview includes the pressure-response, direction-reversal, and vector-display updates below.
 
@@ -38,7 +38,7 @@ The latest round-smoothing revision restores full pressure peaks. Smoothing now 
 
 ## Validation
 
-The 0.13.6 production build, complete repository verifier suite, and deployment privacy checks passed. Coverage includes the revised Extra smooth mode, adaptive preview modes, pressure-only stylus capture, settings migration, and compiled-plugin startup. Device feedback is still needed for Apple Pencil latency and iPad zoom stability.
+The 0.13.7 production build, complete repository verifier suite, and deployment privacy checks passed. Coverage includes the revised Extra smooth mode, adaptive preview modes, pressure-only stylus capture, settings migration, and compiled-plugin startup. Device feedback is still needed for Apple Pencil latency and iPad zoom stability.
 
 Run `node scripts/check-round-smoothing.js` for actual corner rounding, peak preservation, neighbouring widths, reversal coverage, and zoom/reopen parity. The handwriting, pressure-response, vector-display, and stroke-settings checks cover earlier renderer compatibility, display, erasing, publication, snapshots, sidecar persistence, and export. Run `node scripts/run-checks.js` for the complete repository verifier suite after building with `node esbuild.config.mjs production`.
 
