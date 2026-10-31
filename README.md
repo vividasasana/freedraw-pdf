@@ -17,13 +17,13 @@ Requires **Obsidian 1.12.0 or later**.
 - **Note embeds:** display an annotated page or selected region inside a Markdown note.
 - **Export:** create a separate annotated PDF, including added pages and selectable typed or accepted OCR text.
 
-## What’s new in 0.13.7
+## What’s new in 0.13.8
 
 - Optional OCR with Gemini, an OpenAI-compatible service or a separately installed local helper.
 - Drag-to-size and draw-and-hold Shapes controls.
 - Improved partial erasing, template thumbnails and page navigation.
 
-See the [release notes](docs/releases/0.13.7.md) for details.
+See the [release notes](docs/releases/0.13.8.md) for details.
 
 ## Install
 
