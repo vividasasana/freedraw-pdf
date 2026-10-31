@@ -87,3 +87,7 @@ See the [contributor guide](CONTRIBUTING.md) for local setup, checks, and contri
 ## License
 
 Freedraw PDF is released under the [MIT License](LICENSE). Stroke rendering uses [perfect-freehand](https://github.com/steveruizok/perfect-freehand), also licensed under MIT.
+
+## Documentation
+
+See the [documentation index](docs/README.md) and [Privacy](docs/privacy.md).
