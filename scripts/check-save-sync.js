@@ -41,6 +41,15 @@ async function main() {
  assert.equal(JSON.parse(disk.get('paper.pdf.annot.json')).strokes.length, 3, 'Independent Pencil additions must merge instead of blocking all saves');
  assert.equal(editing.strokes.length, 3, 'Merged remote ink must remain in the current document for the next save');
  await store.save(file, editing);
+ // Two views may independently reach identical non-stroke content after their
+ // shared baseline. That is convergence, not an edit that needs an overwrite.
+ const converging = await store.load(file);
+ const convergedRemote = JSON.parse(disk.get('paper.pdf.annot.json'));
+ convergedRemote.latestPageStyle = {template:'grid',paperColor:'#00ff00',pageSize:'letter'};
+ converging.latestPageStyle = {...convergedRemote.latestPageStyle};
+ disk.set('paper.pdf.annot.json',JSON.stringify(convergedRemote));
+ await store.save(file,converging);
+ assert.equal(JSON.parse(disk.get('paper.pdf.annot.json')).latestPageStyle.paperColor,'#00ff00','Identical local/remote content must not raise a save clash');
  const conflict = await store.load(file);
  const changed = JSON.parse(disk.get('paper.pdf.annot.json'));
  changed.strokes[0].color = '#ff0000';

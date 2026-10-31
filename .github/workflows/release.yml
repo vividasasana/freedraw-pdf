@@ -33,6 +33,9 @@ jobs:
         run: ./scripts/check-deployment.ps1
       - name: Recheck generated asset privacy
         run: npm run check:privacy
+      - name: Package installable ZIP
+        shell: pwsh
+        run: ./scripts/package-plugin.ps1
       - name: Attest release artifacts
         uses: actions/attest-build-provenance@v2
         with:
@@ -40,16 +43,17 @@ jobs:
             manifest.json
             main.js
             styles.css
+            dist/freedraw-pdf-${{ github.ref_name }}.zip
       - name: Publish version notes and assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" --clobber manifest.json main.js styles.css
+            gh release upload "$GITHUB_REF_NAME" --clobber manifest.json main.js styles.css "dist/freedraw-pdf-${GITHUB_REF_NAME}.zip"
             gh release edit "$GITHUB_REF_NAME" --title "Freedraw PDF $GITHUB_REF_NAME" \
               --notes-file "docs/releases/${GITHUB_REF_NAME}.md" --prerelease=false --latest
           else
             gh release create "$GITHUB_REF_NAME" --verify-tag --title "Freedraw PDF $GITHUB_REF_NAME" \
               --notes-file "docs/releases/${GITHUB_REF_NAME}.md" \
-              manifest.json main.js styles.css
+              manifest.json main.js styles.css "dist/freedraw-pdf-${GITHUB_REF_NAME}.zip"
           fi

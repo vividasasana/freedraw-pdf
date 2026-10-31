@@ -1,13 +1,33 @@
+import { HoldGesture } from "./src/shapes/holdGesture";
+import { fitGesture } from "./src/shapes/recognition";
+import { constrainShape, isDrawingModifierHeld, type ShapeConstraint } from "./src/shapes/constraints";
+import { renderShape, shapeGeometry, shapeIntersectsSegment } from "./src/shapes/shapeGeometry";
+import { annotationOpacity } from "./src/shapes/shapeOptions";
+import { createShapeOptionsPopover } from "./src/ui/shapeOptionsPopover";
+import { inkToolMenuItems, inkWaveSizeMenuItems } from "./src/ui/inkToolMenu";
+import { contextualToolControls } from "./src/ui/contextualToolControls";
+import { clearNativeTemplateThumbnail, syncNativeTemplateThumbnail } from "./src/ui/nativeTemplateThumbnail";
+import { toolCommandDefinitions } from "./src/commands/toolCommands";
+import type { ShapeOptions } from "./src/types";
+import type { InkToolKind, InkToolOptions, InkDrawingMode, ShapeLineStyle } from "./src/types";
 import { resolveToolShortcut } from "./src/interaction/toolShortcuts";
-import { App, FileView, MarkdownView, Menu, Modal, Notice, Platform, Plugin, Setting, TAbstractFile, TFile, WorkspaceLeaf, setIcon } from "obsidian";
+import { App, FileView, MarkdownView, Menu, Modal, Notice, Platform, Plugin, Scope, Setting, TAbstractFile, TFile, WorkspaceLeaf, setIcon, requestUrl } from "obsidian";
+import { getOcrPageView,type OcrSettings } from "./src/ocr/model";
+import { OcrSessionController } from "./src/ocr/sessionController";
+import { recognisedSelectionText } from "./src/ocr/clipboard";
+import { ocrEndpoint } from "./src/ocr/providers";
+import { syncOcrTextLayer } from "./src/ocr/display";
+import { collectOcrGroups, transformOcrGroups, cloneOcrGroups } from "./src/ocr/transforms";
+import { syncReadOnlyTextLayer } from "./src/text/readOnlyLayer";
 import { getAnnotationPixelRatio } from "./src/render/canvasBudget";
+import { PageResidencyCache, type PageRetainedCost } from "./src/render/pageResidencyCache";
 import { SvgAnnotationRenderer, SvgDrawingContext } from "./src/render/svgDrawingContext";
 import { appendStrokePoints, drawSmoothInkStroke, fillInkStrokeOutline, getSmoothInkStrokeOutline, setInkRenderSettings, type InkStrokeOutline } from "./src/ink/inkEngine";
 import { boundsOverlap, distanceBetween, distanceToSegment, getPolygonBounds, segmentsIntersect } from "./src/annotation/geometry";
 import { getAnnotationRenderables, getRenderableOrder, reorderRenderables } from "./src/annotation/renderOrder";
 import type { AnnotationReorderDirection } from "./src/annotation/renderOrder";
 import { getNormalizedStrokePadding, getShapeBounds, getStrokeBounds, getTextBounds } from "./src/annotation/bounds";
-import { eraseStrokeSegmentsAlongPath } from "./src/annotation/eraser";
+import { eraseStrokeSegmentsAlongPath, eraseShapeSegmentsAlongPath } from "./src/annotation/eraser";
 import { cloneAnnotationsForPage, distanceBetweenSegments, distanceToBounds, distanceToRectEdge, distanceToShape, distanceToStroke, getClipboardPasteOffset, getSelectionBoxPoints, normalizeRect, parseRegionReference, pointInBounds, segmentIntersectsExpandedBounds } from "./src/annotation/interaction";
 import { PAPER_TEMPLATE_DOT_COLOR, PAPER_TEMPLATE_GRID_COLOR, PAPER_TEMPLATE_LINE_COLOR, getPaperTemplateMetrics } from "./src/notebook/paperTemplates";
 import {
@@ -107,7 +127,6 @@ import type {
 	SelectedTarget,
 	SelectionMode,
 	ShapeAnnotation,
-	ShapeTool,
 	StrokeAnnotation,
 	TextAnnotation,
 	TextAlignment,
@@ -471,9 +490,11 @@ class ImageInsertModal extends Modal {
 	}
 }
 
-type TransientPopoverKey = "stroke" | "color" | "font" | "paper-color" | "confirm" | "rename" | "go-to-page" | "page-list";
+type TransientPopoverKey = "shape" | "stroke" | "color" | "font" | "paper-color" | "confirm" | "rename" | "go-to-page" | "page-list";
 
 class NativePdfAnnotatorSession {
+	private ocrController: OcrSessionController | null = null;
+	private ocrHiddenStrokeIds = new Set<string>();
 	private selectionBackground: { key: string; canvas: HTMLCanvasElement } | null = null;
 	private publishedFrames = new WeakMap<HTMLCanvasElement, string>();
 	private renderRevision = 0;
@@ -539,6 +560,11 @@ class NativePdfAnnotatorSession {
 	private currentStroke: StrokeAnnotation | null = null;
 	private currentStrokeRenderedPointCount = 0;
 	private currentShape: ShapeAnnotation | null = null;
+	private shapeHold: HoldGesture | null = null;
+	private shapeUnconstrainedPreview: ShapeAnnotation | null = null;
+	private shapeModifierState = { regular: false, right: false };
+	private assistedShapeSource: StrokeAnnotation | null = null;
+	private shapeGestureOptions: ShapeOptions | null = null;
 	private selectedTarget: SelectedTarget | null = null;
 	private selectedTargets: SelectedTarget[] = [];
 	private currentLasso: LassoSelection | null = null;
@@ -573,6 +599,8 @@ class NativePdfAnnotatorSession {
 	private strokePathCache = new Map<string, { signature: string; outline: InkStrokeOutline }>();
 	private strokePointHashCache = new WeakMap<StrokeAnnotation, { points: StrokeAnnotation["points"]; count: number; first: StrokeAnnotation["points"][number] | undefined; last: StrokeAnnotation["points"][number] | undefined; hash: number }>();
 	private pageRenderSlots = new Map<number, PageRenderSlotPool>();
+	private readonly pageResidency = new PageResidencyCache(Platform.isMobile ? 16 * 1024 * 1024 : 32 * 1024 * 1024);
+	private pageResidencyEvictionHandle: number | null = null;
 	private snapshotCanvases = new Set<HTMLCanvasElement>();
 	private svgRenderer = new SvgAnnotationRenderer();
 	private objectEraseRenderCanvas: HTMLCanvasElement | null = null;
@@ -612,6 +640,7 @@ class NativePdfAnnotatorSession {
 	private currentTextLineSpacing = INLINE_TEXT_LINE_HEIGHT;
 	private currentTextWordWrap = true;
 	private sessionKeyListenerBound = false;
+	private inlineTextKeyboardScope: Scope | null = null;
 	private keyboardNudgeHistoryOpen = false;
 
 	constructor(
@@ -623,7 +652,7 @@ class NativePdfAnnotatorSession {
 		this.ownerWindow = this.ownerDocument.defaultView ?? window;
 		this.toolState = new ToolStateController(this.plugin.getStoredPresets(), this.plugin.getToolDefaults());
 		this.transientPopovers = new TransientPopoverRegistry(
-			createTransientPopoverEnvironment(this.leaf.view.containerEl.ownerDocument)
+			createTransientPopoverEnvironment(this.leaf.view.containerEl.ownerDocument, () => this.scheduleRepositionOpenPopovers())
 		);
 		this.currentTextColor = this.plugin.getTextColor();
 	}
@@ -844,6 +873,8 @@ class NativePdfAnnotatorSession {
 		this.commitActiveInkBeforeLayoutRefresh();
 		this.finishSessionInlineTextEditor(true);
 		const closingFile = this.file;
+		this.ocrController?.dispose();
+		this.ocrController=null;
 		const closingDocument = this.annotationDocument;
 		const closingDirty = this.isDirty;
 		void this.flushSave().then(async () => {
@@ -891,6 +922,7 @@ class NativePdfAnnotatorSession {
 		this.unbindNativePdfEvents();
 		this.destroyPageSurfaces();
 		this.renderTelemetry.dispose();
+		this.rootEl?.parentElement?.classList.remove("has-freedraw-pdf-toolbar");
 		this.rootEl?.remove();
 		this.rootEl = null;
 		this.toolbarEl = null;
@@ -907,6 +939,7 @@ class NativePdfAnnotatorSession {
 		this.ownerWindow.addEventListener("keydown", this.handleSessionKeyDown, { capture: true });
 		this.ownerWindow.addEventListener("keyup", this.handleSessionKeyUp);
 		this.ownerWindow.addEventListener("blur", this.handleSessionWindowBlur);
+		this.ownerWindow.addEventListener("focus", this.handleSessionWindowFocus);
 		this.sessionKeyListenerBound = true;
 	}
 
@@ -917,6 +950,8 @@ class NativePdfAnnotatorSession {
 		this.ownerWindow.removeEventListener("keydown", this.handleSessionKeyDown, { capture: true });
 		this.ownerWindow.removeEventListener("keyup", this.handleSessionKeyUp);
 		this.ownerWindow.removeEventListener("blur", this.handleSessionWindowBlur);
+		this.ownerWindow.removeEventListener("focus", this.handleSessionWindowFocus);
+		this.releaseInlineTextKeyboardScope();
 		this.keyboardNudgeHistoryOpen = false;
 		this.sessionKeyListenerBound = false;
 	}
@@ -1405,6 +1440,7 @@ class NativePdfAnnotatorSession {
 		nextDocument.textItems = nextDocument.textItems.filter((item) => activePageNumbers.has(item.page)).map((item) => ({ ...item, page: mapPage(item.page) }));
 		nextDocument.shapes = nextDocument.shapes.filter((shape) => activePageNumbers.has(shape.page)).map((shape) => ({ ...shape, page: mapPage(shape.page) }));
 		nextDocument.imageItems = (nextDocument.imageItems ?? []).filter((image) => activePageNumbers.has(image.page)).map((image) => ({ ...image, page: mapPage(image.page) }));
+		if (nextDocument.ocrGroups) nextDocument.ocrGroups = nextDocument.ocrGroups.filter(group => activePageNumbers.has(group.page)).map(group => ({ ...group, page: mapPage(group.page) }));
 		nextDocument.appendedPages = [];
 		nextDocument.pdfPageTemplates = [];
 		nextDocument.nativePageTemplatesEditable = false;
@@ -1596,9 +1632,18 @@ class NativePdfAnnotatorSession {
 		return this.getSelectionRegion();
 	}
 
-	copySelectedTargets(): void {
+	copySelectedTargets(asHandwriting = false): void {
 		if (!this.annotationDocument || this.selectedTargets.length === 0) {
 			this.refreshStatus("Nothing selected");
+			return;
+		}
+		if (!asHandwriting && this.plugin.getOcrSettings?.().copyHandwritingAsText && this.selectedTargets.every(target => target.kind === "stroke")) {
+			const text = recognisedSelectionText(this.annotationDocument, new Set(this.selectedTargets.map(target => target.id)));
+			if (!text) {
+				new Notice("Select a complete recognised passage, or use Copy handwriting.");
+				return;
+			}
+			void this.copyRecognisedSelection(text);
 			return;
 		}
 
@@ -1608,6 +1653,7 @@ class NativePdfAnnotatorSession {
 		const imageIds = new Set(this.selectedTargets.filter((target) => target.kind === "image").map((target) => target.id));
 
 		const payload: AnnotationClipboardPayload = {
+            ocrGroups: collectOcrGroups(this.annotationDocument, strokeIds),
 			strokes: this.annotationDocument.strokes
 				.filter((stroke) => strokeIds.has(stroke.id))
 				.map((stroke) => cloneDocument({
@@ -1648,6 +1694,16 @@ class NativePdfAnnotatorSession {
 		this.refreshStatus(total === 1 ? "Copied selection" : `Copied ${total} selections`);
 	}
 
+	private async copyRecognisedSelection(text: string): Promise<void> {
+		const clipboardRevision = this.plugin.getClipboardRevision();
+		try {
+			await writeClipboardText(text);
+			if (this.plugin.getClipboardRevision() !== clipboardRevision) return;
+			this.plugin.setClipboard({ strokes: [], textItems: [], shapes: [], imageItems: [] });
+			this.refreshStatus("Copied recognised text");
+		} catch { new Notice("Could not copy recognised text to the clipboard."); }
+	}
+
 	cutSelectedTargets(): void {
 		if (!this.annotationDocument || this.selectedTargets.length === 0) {
 			this.refreshStatus("Nothing selected");
@@ -1658,6 +1714,7 @@ class NativePdfAnnotatorSession {
 		const shapeIds = new Set(this.selectedTargets.filter((target) => target.kind === "shape").map((target) => target.id));
 		const imageIds = new Set(this.selectedTargets.filter((target) => target.kind === "image").map((target) => target.id));
 		const payload: AnnotationClipboardPayload = {
+            ocrGroups: collectOcrGroups(this.annotationDocument, strokeIds),
 			strokes: this.annotationDocument.strokes
 				.filter((stroke) => strokeIds.has(stroke.id))
 				.map((stroke) => cloneDocument({
@@ -1700,6 +1757,7 @@ class NativePdfAnnotatorSession {
 		this.plugin.setClipboard(payload);
 		this.pushHistory();
 		this.annotationDocument.strokes = this.annotationDocument.strokes.filter((stroke) => !strokeIds.has(stroke.id));
+		if (this.annotationDocument.ocrGroups) this.annotationDocument.ocrGroups = this.annotationDocument.ocrGroups.filter(group => !group.strokeIds.some(id => strokeIds.has(id)));
 		this.annotationDocument.textItems = this.annotationDocument.textItems.filter((item) => !textIds.has(item.id));
 		this.annotationDocument.shapes = this.annotationDocument.shapes.filter((shape) => !shapeIds.has(shape.id));
 		this.annotationDocument.imageItems = (this.annotationDocument.imageItems ?? []).filter((image) => !imageIds.has(image.id));
@@ -1723,6 +1781,7 @@ class NativePdfAnnotatorSession {
 
 		const pastePoint = pasteInPlace ? null : this.getRecentPdfPastePoint(this.currentPage);
 		const pasteOffset = pasteInPlace ? { x: 0, y: 0 } : getClipboardPasteOffset(clipboard, pastePoint);
+		const strokeIdMap = new Map<string, string>();
 		const nextSelections: SelectedTarget[] = [];
 		this.pushHistory();
 
@@ -1739,7 +1798,8 @@ class NativePdfAnnotatorSession {
 				zIndex: this.getNextPageZIndex(this.currentPage),
 				createdAt: new Date().toISOString()
 			};
-			this.annotationDocument.strokes.push(nextStroke);
+			strokeIdMap.set(stroke.id, nextStroke.id);
+            this.annotationDocument.strokes.push(nextStroke);
 			nextSelections.push({ kind: "stroke", id: nextStroke.id, page: nextStroke.page });
 		}
 
@@ -1804,6 +1864,7 @@ class NativePdfAnnotatorSession {
 			return;
 		}
 
+		if (clipboard.ocrGroups?.length) cloneOcrGroups(this.annotationDocument, clipboard.ocrGroups, clipboard.strokes, strokeIdMap, point => ({ x: point.x + pasteOffset.x, y: point.y + pasteOffset.y }), () => generateId("ocr"));
 		this.selectedTargets = nextSelections;
 		this.selectedTarget = nextSelections[0] ?? null;
 		this.lastSelectionRegion = null;
@@ -1849,6 +1910,7 @@ class NativePdfAnnotatorSession {
 		const removedCount = selectedStrokeIds.size + selectedTextIds.size + selectedShapeIds.size + selectedImageIds.size;
 
 		this.annotationDocument.strokes = this.annotationDocument.strokes.filter((stroke) => !selectedStrokeIds.has(stroke.id));
+		if (this.annotationDocument.ocrGroups) this.annotationDocument.ocrGroups = this.annotationDocument.ocrGroups.filter(group => !group.strokeIds.some(id => selectedStrokeIds.has(id)));
 		this.annotationDocument.textItems = this.annotationDocument.textItems.filter((item) => !selectedTextIds.has(item.id));
 		this.annotationDocument.shapes = this.annotationDocument.shapes.filter((shape) => !selectedShapeIds.has(shape.id));
 		this.annotationDocument.imageItems = (this.annotationDocument.imageItems ?? []).filter((image) => !selectedImageIds.has(image.id));
@@ -1915,6 +1977,7 @@ class NativePdfAnnotatorSession {
 	}
 
 	private cancelActiveSessionInteraction(): boolean {
+		this.clearShapeGesture();
 		this.unbindPdfPointerDocumentTracking();
 		const hasActiveInteraction =
 			this.currentStroke !== null ||
@@ -1954,9 +2017,6 @@ class NativePdfAnnotatorSession {
 		} else {
 			if (previousEntry) {
 				this.undoStack.push(previousEntry);
-			}
-			if (isShapeTool(this.currentTool) && this.undoStack.length > 0) {
-				this.undoStack.pop();
 			}
 			this.drawPageAnnotations(affectedPage);
 		}
@@ -2052,6 +2112,9 @@ class NativePdfAnnotatorSession {
 
 		const offsetX = 0.018;
 		const offsetY = 0.018;
+		const strokeIdMap = new Map<string, string>();
+		const copiedSource = this.annotationDocument.strokes.slice();
+		const copiedOcrGroups = this.annotationDocument.ocrGroups?.length ? collectOcrGroups(this.annotationDocument, new Set(this.selectedTargets.filter(target => target.kind === "stroke").map(target => target.id))) : [];
 		const nextSelections: SelectedTarget[] = [];
 		this.pushHistory();
 
@@ -2072,7 +2135,8 @@ class NativePdfAnnotatorSession {
 					zIndex: this.getNextPageZIndex(stroke.page),
 					createdAt: new Date().toISOString()
 				};
-				this.annotationDocument.strokes.push(nextStroke);
+				strokeIdMap.set(stroke.id, nextStroke.id);
+            this.annotationDocument.strokes.push(nextStroke);
 				nextSelections.push({ kind: "stroke", id: nextStroke.id, page: nextStroke.page });
 				continue;
 			}
@@ -2127,6 +2191,7 @@ class NativePdfAnnotatorSession {
 			return;
 		}
 
+		if (copiedOcrGroups.length) cloneOcrGroups(this.annotationDocument, copiedOcrGroups, copiedSource, strokeIdMap, point => ({ x: point.x + offsetX, y: point.y + offsetY }), () => generateId("ocr"));
 		this.selectedTargets = nextSelections;
 		this.selectedTarget = nextSelections[0] ?? null;
 		this.lastSelectionRegion = null;
@@ -2692,7 +2757,9 @@ class NativePdfAnnotatorSession {
 
 		const nativeToolbarEl = this.getNativeToolbarEl();
 		const viewContentEl = this.getViewContentEl();
+		if(this.rootEl.parentElement && this.rootEl.parentElement!==nativeToolbarEl)this.rootEl.parentElement.classList.remove("has-freedraw-pdf-toolbar");
 		if (nativeToolbarEl) {
+			nativeToolbarEl.classList.add("has-freedraw-pdf-toolbar");
 			this.rootEl.classList.add("is-inline");
 			this.rootEl.classList.remove("is-floating");
 			this.rootEl.setCssStyles({
@@ -2730,10 +2797,11 @@ class NativePdfAnnotatorSession {
 		if (!this.rootEl) {
 			return;
 		}
+		const alignRight = this.plugin.getToolbarAlignment?.() === "right";
 		this.rootEl.setCssStyles({
 			top: `${this.floatingToolbarOffset.top}px`,
-			right: `${this.floatingToolbarOffset.right}px`,
-			left: "auto"
+			right: alignRight ? `${this.floatingToolbarOffset.right}px` : "auto",
+			left: alignRight ? "auto" : `${this.floatingToolbarOffset.right}px`
 		});
 	}
 
@@ -2774,7 +2842,7 @@ class NativePdfAnnotatorSession {
 		const maxTop = Math.max(0, (bounds?.height ?? this.ownerWindow.innerHeight) - toolbarRect.height - 8);
 		const maxRight = Math.max(0, (bounds?.width ?? this.ownerWindow.innerWidth) - Math.min(toolbarRect.width, bounds?.width ?? this.ownerWindow.innerWidth) - 8);
 		this.floatingToolbarOffset = {
-			right: clamp(this.floatingToolbarDrag.startRight - (event.clientX - this.floatingToolbarDrag.startX), 8, maxRight),
+			right: clamp(this.floatingToolbarDrag.startRight + (this.plugin.getToolbarAlignment?.() === "right" ? -1 : 1) * (event.clientX - this.floatingToolbarDrag.startX), 8, maxRight),
 			top: clamp(this.floatingToolbarDrag.startTop + (event.clientY - this.floatingToolbarDrag.startY), 8, maxTop)
 		};
 		this.applyFloatingToolbarPosition();
@@ -2850,10 +2918,15 @@ class NativePdfAnnotatorSession {
 			return true;
 		}
 		const element = isDomElement(target) ? target : target.parentElement;
-		return !!element?.closest(".pdf-native-annotator-synthetic-pages, .pdf-native-annotator-synthetic-page, .pdf-native-annotator-overlay, .pdf-native-annotator-vector, .pdf-native-annotator-transient, .pdf-native-annotator-template-background, .pdf-native-annotator-native-page-entry, .pdf-native-annotator-native-page-footer, [data-freedraw-layer], .freedraw-pdf-scroll-preview");
+		return !!element?.closest(".pdf-native-annotator-synthetic-pages, .pdf-native-annotator-synthetic-page, .pdf-native-annotator-overlay, .pdf-native-annotator-vector, .pdf-native-annotator-transient, .pdf-native-annotator-template-background, .pdf-native-annotator-native-page-entry, .pdf-native-annotator-native-page-footer, .pdf-native-annotator-native-template-paper, .pdf-native-annotator-native-template-count, [data-freedraw-layer], .freedraw-pdf-scroll-preview, .freedraw-pdf-ocr-text-layer, .freedraw-pdf-readonly-text-layer");
 	}
 
 	private destroyObservers(): void {
+		if (this.pageResidencyEvictionHandle !== null) {
+			this.ownerWindow.clearTimeout(this.pageResidencyEvictionHandle);
+			this.pageResidencyEvictionHandle = null;
+		}
+		this.pageResidency.clear();
 		this.svgRenderer?.hideMotionPreviews?.();
 		if (this.motionPreviewHandle !== null) { this.ownerWindow.clearTimeout(this.motionPreviewHandle); this.motionPreviewHandle = null; }
 		this.finishFingerPan(false);
@@ -3174,6 +3247,7 @@ class NativePdfAnnotatorSession {
 			}
 		}
 		for (const thumbnailView of thumbnailViews) {
+			thumbnailView.querySelectorAll<HTMLElement>(".pdf-native-annotator-native-template-thumbnail").forEach(clearNativeTemplateThumbnail);
 			thumbnailView.classList.remove("pdf-native-annotator-has-synthetic-selection");
 			thumbnailView.querySelectorAll(".pdf-native-annotator-native-page-entry, .pdf-native-annotator-native-page-footer")
 				.forEach((element) => element.remove());
@@ -3259,8 +3333,10 @@ class NativePdfAnnotatorSession {
 		this.nativeMixedThumbnailViewEl = thumbnailView;
 		const mixedEntries = this.getMixedPageEntries();
 		const addedEntries = mixedEntries.filter((entry) => entry.isAdded);
+		const nativeTemplates = new Map(mixedEntries.filter(entry => !entry.isAdded && entry.template).map(entry => [entry.pageNumber, entry]));
 		const nativeLinks = Array.from(thumbnailView.querySelectorAll<HTMLElement>(":scope > a"));
 		const signature = JSON.stringify({
+			templates: Array.from(nativeTemplates.values()).map(entry => [entry.pageNumber, entry.template, entry.pageSize, entry.paperColor, entry.annotationCount]),
 			added: addedEntries.map((entry) => [
 				entry.pageNumber,
 				entry.pageId,
@@ -3278,7 +3354,8 @@ class NativePdfAnnotatorSession {
 			this.nativeMixedThumbnailSignature === signature &&
 			thumbnailView.querySelectorAll(":scope > .pdf-native-annotator-native-page-entry").length === addedEntries.length &&
 			!!thumbnailView.querySelector(":scope > .pdf-native-annotator-native-page-footer") &&
-			nativeLinks.every((linkEl) => linkEl.dataset.freedrawNativeContextBound === "true");
+			nativeLinks.every((linkEl) => linkEl.dataset.freedrawNativeContextBound === "true" &&
+				(!nativeTemplates.has(this.getNativePdfThumbnailPageNumber(linkEl) ?? 0) || !!linkEl.querySelector(".pdf-native-annotator-native-template-paper")));
 		if (structureIsCurrent) {
 			this.updateNativeMixedPageThumbnailSelection();
 			return;
@@ -3299,6 +3376,7 @@ class NativePdfAnnotatorSession {
 				continue;
 			}
 			nativeByPage.set(pageNumber, { linkEl, thumbnailEl });
+			syncNativeTemplateThumbnail(thumbnailEl, nativeTemplates.get(pageNumber));
 			linkEl.classList.toggle("pdf-native-annotator-native-pdf-page-hidden", this.isPdfPageDeleted(pageNumber));
 			if (linkEl.dataset.freedrawNativeContextBound !== "true") {
 				linkEl.addEventListener("contextmenu", this.handleNativePdfThumbnailContextMenu);
@@ -3347,7 +3425,7 @@ class NativePdfAnnotatorSession {
 			}
 			const paperEl = thumbnailEl.createDiv({ cls: "pdf-native-annotator-native-thumbnail-paper" });
 			paperEl.createDiv({ cls: "pdf-native-annotator-native-thumbnail-pattern" });
-			const addedLabel = paperEl.createSpan({ cls: "pdf-native-annotator-native-thumbnail-kind", text: "Added" });
+			const addedLabel = paperEl.createSpan({ cls: "pdf-native-annotator-native-thumbnail-kind", text: entry.template ? getNotebookTemplateLabel(entry.template) : "Added" });
 			addedLabel.setAttribute("aria-hidden", "true");
 			if (entry.annotationCount > 0) {
 				thumbnailEl.createSpan({
@@ -3410,6 +3488,9 @@ class NativePdfAnnotatorSession {
 			thumbnailView.appendChild(footer);
 		}
 		const removedCount = this.getRemovedPageEntries().length;
+		const thumbnailInset = (parseFloat(referenceStyles?.borderLeftWidth ?? "0") || 0) + (parseFloat(referenceStyles?.paddingLeft ?? "0") || 0);
+		const thumbnailTopGap = (parseFloat(referenceStyles?.borderTopWidth ?? "0") || 0) + (parseFloat(referenceStyles?.paddingTop ?? "0") || 0);
+		footer.setCssProps({ "--freedraw-thumbnail-inset": `${thumbnailInset}px`, "--freedraw-thumbnail-top-gap": `${thumbnailTopGap}px` });
 		footer.setAttribute("aria-label", removedCount > 0 ? `Manage pages, ${removedCount} removed` : "Manage pages");
 		footer.title = removedCount > 0 ? `Pages - ${removedCount} removed` : "Pages";
 		this.nativeMixedThumbnailSignature = signature;
@@ -3850,11 +3931,15 @@ class NativePdfAnnotatorSession {
 		return getAnnotationPixelRatio(width, height, this.ownerWindow.devicePixelRatio || 1, Platform.isMobile);
 	}
 
-	private releasePageCanvasResources(pageNumber: number): void {
+	private releasePageCanvasResources(pageNumber: number, preservePreview = false): void {
+		this.pageResidency.forget(pageNumber);
+		if (this.shapeGestureOptions && this.pointerPage === pageNumber) this.cancelActiveSessionInteraction();
 		this.cancelPageRenderJob(pageNumber);
 		const surface = this.pageSurfaces.get(pageNumber);
 		if (surface) {
-			if (surface.vectorEl) { this.svgRenderer.release(surface.vectorEl); }
+			surface.hostEl?.querySelector?.(".freedraw-pdf-ocr-text-layer")?.remove();
+			surface.hostEl?.querySelector?.(".freedraw-pdf-readonly-text-layer")?.remove();
+			if (surface.vectorEl) { this.svgRenderer.release(surface.vectorEl, preservePreview); }
 			for (const canvas of [surface.overlayEl, surface.transientEl]) {
 				canvas.width = 1;
 				canvas.height = 1;
@@ -4291,6 +4376,7 @@ class NativePdfAnnotatorSession {
 		}
 		this.ensureOverlayLayerOrder(surface);
 		this.resizeOverlay(surface, true);
+		this.syncSelectableText(surface);
 		if (surface.vectorEl && this.svgRenderer.hasCommittedFrame(surface.vectorEl) && this.publishedFrames.get(surface.overlayEl) === this.getPageFrameKey(surface)) {
 			this.cancelPageRenderJob(pageNumber);
 			return;
@@ -4313,6 +4399,7 @@ class NativePdfAnnotatorSession {
 
 		const bucket = this.getPageAnnotationBucket(pageNumber);
 		const steps: CooperativeRenderStep[] = [];
+		const hiddenOcrStrokeIds=this.annotationDocument?.ocrGroups?.length?getOcrPageView(this.annotationDocument,pageNumber).hiddenStrokeIds:null;
 		for (const imageItem of bucket.imageItems) {
 			steps.push({
 				run: () => { vectorFrame?.setKey(`image:${imageItem.id}`); this.drawImageAnnotation(context, surface, imageItem); },
@@ -4322,6 +4409,7 @@ class NativePdfAnnotatorSession {
 		const renderables = getAnnotationRenderables(bucket.strokes, bucket.textItems, bucket.shapes);
 		for (const renderable of renderables) {
 			if (renderable.kind === "stroke") {
+				if(hiddenOcrStrokeIds?.has(renderable.annotation.id))continue;
 				steps.push({
 					run: () => this.drawStroke(context, surface, renderable.annotation),
 					expensive: true
@@ -4776,8 +4864,7 @@ class NativePdfAnnotatorSession {
 		}
 		for (const pageNumber of this.pageSurfaces.keys()) {
 			if (this.shouldKeepPageHot(pageNumber)) {
-				const surface = this.pageSurfaces.get(pageNumber);
-				if (surface?.vectorEl) this.svgRenderer.showMotionPreview?.(surface.vectorEl);
+				// Retain the sharp SVG frame while the viewport moves.
 				this.pendingRedrawPages.add(pageNumber);
 			}
 		}
@@ -4847,6 +4934,7 @@ class NativePdfAnnotatorSession {
 			end: visiblePages[visiblePages.length - 1] + PAGE_VIRTUALIZATION_MARGIN
 		};
 		if (previousRange && previousRange.start === nextRange.start && previousRange.end === nextRange.end) {
+			this.reconcileWarmPageResidency();
 			return;
 		}
 		this.visiblePageRange = nextRange;
@@ -4854,9 +4942,6 @@ class NativePdfAnnotatorSession {
 		for (const [pageNumber, surface] of this.pageSurfaces.entries()) {
 			const hot = this.shouldKeepPageHot(pageNumber);
 			surface.overlayEl.setCssStyles({ visibility: "visible" });
-			if (!hot && (surface.overlayEl.width > 1 || surface.transientEl.width > 1 || this.pageRenderSlots.has(pageNumber) || !!surface.vectorEl && this.svgRenderer.hasCommittedFrame(surface.vectorEl))) {
-				this.releasePageCanvasResources(pageNumber);
-			}
 			const wasHot = previousRange
 				? pageNumber >= previousRange.start && pageNumber <= previousRange.end
 				: false;
@@ -4864,6 +4949,52 @@ class NativePdfAnnotatorSession {
 				this.schedulePageRedraw(pageNumber);
 			}
 		}
+		this.reconcileWarmPageResidency();
+	}
+
+	private getPageRetainedCost(surface: PageSurface): PageRetainedCost {
+		const vector = surface.vectorEl ? this.svgRenderer.getRetainedCost(surface.vectorEl, this.pageResidency.maxNodes, this.pageResidency.maxBytes) : { nodes: 0, bytes: 0 };
+		const canvases = new Set([surface.overlayEl, surface.transientEl, ...this.pageRenderSlots.get(surface.pageNumber)?.canvases ?? []]);
+		let bytes = vector.bytes;
+		for (const canvas of canvases) bytes += canvas.width * canvas.height * 4;
+		return { nodes: vector.nodes, bytes };
+	}
+
+	private reconcileWarmPageResidency(): void {
+		const now = performance.now();
+		for (const [pageNumber, surface] of this.pageSurfaces) {
+			// Recheck actual partial visibility as well as the cached range before every eviction.
+			if (this.shouldKeepPageHot(pageNumber) || this.isPageNearViewport(pageNumber) || this.inlineTextPageNumber === pageNumber) {
+				this.pageResidency.forget(pageNumber);
+				continue;
+			}
+			if (this.pageResidency.has(pageNumber)) continue;
+			const hasFrame = !!surface.vectorEl && this.svgRenderer.hasCommittedFrame(surface.vectorEl);
+			const hasRaster = surface.overlayEl.width > 1 || surface.transientEl.width > 1 || this.pageRenderSlots.has(pageNumber);
+			if (!hasFrame && !hasRaster) continue;
+			// Finish no new offscreen work. Keep only the last fully published frame and its preview.
+			this.cancelPageRenderJob(pageNumber);
+			this.pageResidency.retain(pageNumber, this.getPageRetainedCost(surface), now);
+		}
+		for (const pageNumber of this.pageResidency.trim(now)) this.releasePageCanvasResources(pageNumber, true);
+		this.scheduleWarmPageEviction();
+	}
+
+	private scheduleWarmPageEviction(): void {
+		if (this.pageResidencyEvictionHandle !== null) this.ownerWindow.clearTimeout(this.pageResidencyEvictionHandle);
+		this.pageResidencyEvictionHandle = null;
+		const nextExpiry = this.pageResidency.nextExpiry();
+		if (nextExpiry === null) return;
+		const evictWhenIdle = () => {
+			this.pageResidencyEvictionHandle = null;
+			// Releasing thousands of nodes should not interrupt active Pencil/text/selection input.
+			if (this.hasActiveTransientRender() || this.inlineTextEditorEl) {
+				this.pageResidencyEvictionHandle = this.ownerWindow.setTimeout(evictWhenIdle, 250);
+				return;
+			}
+			this.reconcileWarmPageResidency();
+		};
+		this.pageResidencyEvictionHandle = this.ownerWindow.setTimeout(evictWhenIdle, Math.max(50, nextExpiry - performance.now()));
 	}
 
 	private updateCurrentPageFromScroll(): void {
@@ -4874,12 +5005,18 @@ class NativePdfAnnotatorSession {
 		const containerRect = this.scrollParent.getBoundingClientRect();
 		let nearestPage = this.currentPage;
 		let nearestDistance = Number.POSITIVE_INFINITY;
+		let nearestVisibility = Number.NEGATIVE_INFINITY;
+		const hasViewport = Number.isFinite(containerRect.bottom) && containerRect.bottom > containerRect.top;
 
 		for (const [pageNumber, surface] of this.pageSurfaces.entries()) {
 			const rect = surface.pageEl.getBoundingClientRect();
 			const distance = Math.abs(rect.top - containerRect.top - 28);
-			if (distance < nearestDistance) {
+			const visibility = hasViewport && rect.height > 0 ? Math.max(0, Math.min(rect.bottom, containerRect.bottom) - Math.max(rect.top, containerRect.top)) / rect.height : -1;
+			if (visibility === 0) continue;
+			const tied = Math.abs(visibility - nearestVisibility) < 0.001;
+			if (visibility > nearestVisibility + 0.001 || tied && (pageNumber === this.currentPage || nearestPage !== this.currentPage && distance < nearestDistance)) {
 				nearestDistance = distance;
+				nearestVisibility = visibility;
 				nearestPage = pageNumber;
 			}
 		}
@@ -4888,6 +5025,7 @@ class NativePdfAnnotatorSession {
 			this.currentPage = nearestPage;
 			this.updateNativeMixedPageThumbnailSelection();
 			this.syncNativeMixedPageNavigator();
+			this.refreshToolbar();
 		}
 	}
 
@@ -5065,6 +5203,8 @@ class NativePdfAnnotatorSession {
 		});
 		editor.setCssProps({ "--annotator-inline-text-color": textColor });
 		frame.appendChild(editor);
+		editor.addEventListener("focus", () => this.activateInlineTextKeyboardScope(editor));
+		editor.addEventListener("blur", () => this.releaseInlineTextKeyboardScope());
 		const focusEditor = (): void => {
 			if (!editor.isConnected) {
 				return;
@@ -5159,6 +5299,7 @@ class NativePdfAnnotatorSession {
 	}
 
 	private finishSessionInlineTextEditor(apply: boolean): void {
+		this.releaseInlineTextKeyboardScope();
 		const editor = this.inlineTextEditorEl;
 		const frame = this.inlineTextEditorFrameEl;
 		const pageNumber = this.inlineTextPageNumber;
@@ -5505,6 +5646,7 @@ class NativePdfAnnotatorSession {
 	}
 
 	private setActiveTool(tool: AnnotationTool): void {
+		if (this.shapeGestureOptions) this.cancelActiveSessionInteraction();
 		const handoff = (this.currentTool === "text" && tool === "select") || (this.currentTool === "select" && tool === "text");
 		// Commit text after switching to Select so the edited box stays selected.
 		if (handoff && tool === "select") this.toolState.setActiveTool(tool);
@@ -5933,6 +6075,7 @@ class NativePdfAnnotatorSession {
 	}
 
 	private applyPreset(presetId: string): void {
+		if (this.shapeGestureOptions) this.cancelActiveSessionInteraction();
 		if (!this.toolState.applyPreset(presetId)) {
 			return;
 		}
@@ -6584,6 +6727,7 @@ class NativePdfAnnotatorSession {
 		const sourceTextItems = this.annotationDocument.textItems.filter((item) => item.page === sourcePageNumber);
 		const sourceShapes = this.annotationDocument.shapes.filter((shape) => shape.page === sourcePageNumber);
 		const sourceImages = (this.annotationDocument.imageItems ?? []).filter((image) => image.page === sourcePageNumber);
+		const sourceOcrGroups = includeAnnotations ? collectOcrGroups(this.annotationDocument, new Set(sourceStrokes.map(stroke => stroke.id))) : [];
 		this.pushHistory();
 		const nextPage: NotebookPage = {
 			...sourcePage,
@@ -6601,8 +6745,10 @@ class NativePdfAnnotatorSession {
 			nextPage
 		);
 		if (includeAnnotations) {
-			const clonedAnnotations = cloneAnnotationsForPage(sourceStrokes, sourceTextItems, sourceShapes, insertedPageNumber);
+			const strokeIdMap = new Map<string, string>();
+			const clonedAnnotations = cloneAnnotationsForPage(sourceStrokes, sourceTextItems, sourceShapes, insertedPageNumber, strokeIdMap);
 			this.annotationDocument.strokes.push(...clonedAnnotations.strokes);
+			if (sourceOcrGroups.length) cloneOcrGroups(this.annotationDocument, sourceOcrGroups, sourceStrokes, strokeIdMap, point => point, () => generateId("ocr"));
 			(this.annotationDocument.eraserPaths ??= []).push(...sourceEraserPaths.map((eraserPath) => ({
 				...JSON.parse(JSON.stringify(eraserPath)) as EraserPathAnnotation,
 				id: generateId("erase"),
@@ -6674,6 +6820,7 @@ class NativePdfAnnotatorSession {
 				this.annotationDocument.textItems = this.annotationDocument.textItems.filter((item) => item.page !== pageNumber);
 				this.annotationDocument.shapes = this.annotationDocument.shapes.filter((shape) => shape.page !== pageNumber);
 				this.annotationDocument.imageItems = (this.annotationDocument.imageItems ?? []).filter((image) => image.page !== pageNumber);
+				if (this.annotationDocument.ocrGroups) this.annotationDocument.ocrGroups = this.annotationDocument.ocrGroups.filter(group => group.page !== pageNumber);
 				this.selectedTargets = [];
 				this.selectedTarget = null;
 				this.markDirtyAndRedraw("Cleared added page");
@@ -7439,8 +7586,66 @@ class NativePdfAnnotatorSession {
 		this.showMenuBelowAnchor(menu, anchor);
 	}
 
+	private getOcrController(): OcrSessionController {
+		if(!this.ocrController)this.ocrController=new OcrSessionController({
+			app:this.plugin.app,owner:this.ownerWindow,settingsHost:this.plugin,
+			settings:()=>this.plugin.getOcrSettings(),credential:()=>this.plugin.getOcrCredential(),
+			transport:async request=>{const result=await requestUrl(request);let json:unknown=null;try{json=result.json;}catch{/* Preserve HTTP status when a gateway returns a non-JSON error. */}return {status:result.status,json};},
+			capture:scope=>{
+				if(!this.annotationDocument||!this.file||this.getPdfFile()?.path!==this.file.path)return null;
+				this.updateCurrentPageFromScroll();
+				const page=this.currentPage,selected=new Set(this.selectedTargets.filter(t=>t.page===page&&t.kind==="stroke").map(t=>t.id));
+				const strokes=this.annotationDocument.strokes.filter(s=>s.page===page&&s.tool==="pen"&&(scope!=="selection"||selected.has(s.id)));
+				const surface=this.pageSurfaces.get(page);
+				return {document:this.annotationDocument,filePath:this.file.path,page,strokes,aspect:surface&&surface.lastWidth>0?surface.lastHeight/surface.lastWidth:1.414};
+			},
+			capturePages:()=>{
+				if(!this.annotationDocument||!this.file||this.getPdfFile()?.path!==this.file.path)return [];
+				const byPage=new Map<number,StrokeAnnotation[]>();
+				for(const stroke of this.annotationDocument.strokes)if(stroke.tool==="pen"){
+					const list=byPage.get(stroke.page)??[];list.push(stroke);byPage.set(stroke.page,list);
+				}
+				return this.getMixedPageEntries().filter(entry=>byPage.has(entry.pageNumber)).map(entry=>{
+					const page=entry.pageNumber,surface=this.pageSurfaces.get(page);
+					const nativePage=this.leaf.view.containerEl.querySelector<HTMLElement>(`.page[data-page-number="${page}"]`);
+					const added=this.getAppendedPages()[page-this.realPdfPageCount-1];
+					const size=added?getNotebookPageSizeDimensions(added.pageSize):null;
+					const width=surface?.lastWidth||nativePage?.clientWidth||size?.width||1;
+					const height=surface?.lastHeight||nativePage?.clientHeight||size?.height||1.414;
+					return {document:this.annotationDocument!,filePath:this.file!.path,page,strokes:byPage.get(page)!,aspect:height/width};
+				});
+			},
+			isCurrent:capture=>this.file?.path===capture.filePath&&this.getPdfFile()?.path===capture.filePath&&this.annotationDocument===capture.document,
+			beforeChange:()=>this.pushHistory(),
+			changed:page=>{this.invalidateAnnotationPageCache(page);this.documentRevision++;this.isDirty=true;this.scheduleSave();this.schedulePageRedraw(page);this.refreshToolbar();},
+			stateChanged:()=>this.refreshToolbar(),
+			notice:message=>{new Notice(message);}
+		});
+		return this.ocrController;
+	}
+
+	private openOcrOptions(): void { this.getOcrController().open(); }
+
+	private createOcrButton(): HTMLButtonElement {
+		return this.createIconButton("scan-text", "Handwriting recognition (OCR)", false, () => this.openOcrOptions());
+	}
+
+	private appendOcrControls(group: HTMLElement): void {
+		group.appendChild(this.createOcrButton());
+		if(!this.annotationDocument?.ocrGroups?.some(g=>g.page===this.currentPage))return;
+		const showingText=getOcrPageView(this.annotationDocument,this.currentPage).groups.length>0;
+		const toggle=this.createIconButton(showingText?"pen-line":"type",showingText?"Show original handwriting":"Show recognised text",false,()=>{
+			this.updateCurrentPageFromScroll?.();
+			const currentText=this.annotationDocument && getOcrPageView(this.annotationDocument,this.currentPage).groups.length>0;
+			void this.getOcrController().run("page",currentText?"ink":"text");
+		});
+		toggle.disabled=this.ocrController?.isBusy??false;
+		group.appendChild(toggle);
+	}
+
 	private openDocumentActionsMenu(button: HTMLButtonElement): void {
 		const menu = new Menu();
+		menu.addItem(item=>item.setTitle("Handwriting recognition (OCR)...").setIcon("scan-text").onClick(()=>this.openOcrOptions()));
 		menu.addItem((item) => item
 			.setTitle("Insert photo...")
 			.setIcon("image-file")
@@ -7474,6 +7679,8 @@ class NativePdfAnnotatorSession {
 				.setTitle("Copy selection")
 				.setIcon("copy")
 				.onClick(() => this.copySelectedTargets()));
+			if (this.plugin.getOcrSettings?.().copyHandwritingAsText) menu.addItem(item => item
+				.setTitle("Copy handwriting").setIcon("pen-line").onClick(() => this.copySelectedTargets(true)));
 			menu.addItem((item) => item
 				.setTitle("Duplicate selection")
 				.setIcon("copy-plus")
@@ -8032,14 +8239,34 @@ class NativePdfAnnotatorSession {
 		const previousToolScrollLeft =
 			this.toolbarEl.querySelector<HTMLElement>(".pdf-native-annotator-group.is-tools")?.scrollLeft ?? 0;
 		const previousToolbarScrollTop = this.toolbarEl.scrollTop;
+		const previousToolbarScrollLeft = this.toolbarEl.scrollLeft;
+		const previousOptionsScrollLeft = this.toolbarEl.querySelector<HTMLElement>(".is-tool-options")?.scrollLeft ?? 0;
+		const previousActionsScrollLeft = this.toolbarEl.querySelector<HTMLElement>(".is-actions")?.scrollLeft ?? 0;
+		const separateOptions = false;
+		this.toolbarEl.classList.toggle("has-separated-options", separateOptions);
+		this.rootEl?.classList.remove("has-separated-tool-options");
+		this.rootEl?.classList.toggle("is-aligned-right", this.plugin.getToolbarAlignment?.() === "right");
+		if (this.rootEl?.classList.contains("is-floating")) this.applyFloatingToolbarPosition();
 		this.toolbarEl.replaceChildren();
 
 		const leftGroup = createDiv();
 		leftGroup.className = "pdf-native-annotator-group is-tools";
+		leftGroup.setAttribute("role", "group");
+		leftGroup.setAttribute("aria-label", "Drawing tools");
+		const optionsGroup = separateOptions ? createDiv() : leftGroup;
+		const trailingToolButtons: HTMLButtonElement[] = [];
+		const quickOptions = (this.plugin.getToolOptionsPresentation?.() ?? "buttons") === "buttons";
+		if (separateOptions) {
+			optionsGroup.className = "pdf-native-annotator-group is-tool-options";
+			optionsGroup.setAttribute("role", "group");
+			optionsGroup.setAttribute("aria-label", "Tool options");
+		}
 
-		leftGroup.appendChild(this.createButton(this.annotationMode ? "Finish" : "Annotate", this.annotationMode, () => {
+		const annotationButton = this.createButton(this.annotationMode ? "Finish" : "Annotate", this.annotationMode, () => {
 			this.toggleAnnotationMode();
-		}));
+		});
+		annotationButton.classList.add("pdf-native-annotator-annotation-toggle");
+		leftGroup.appendChild(annotationButton);
 		if (!this.annotationMode) {
 			const readModeHint = createSpan();
 			readModeHint.className = "pdf-native-annotator-read-mode-hint";
@@ -8048,6 +8275,7 @@ class NativePdfAnnotatorSession {
 
 			const rightGroup = createDiv();
 			rightGroup.className = "pdf-native-annotator-group is-actions";
+			if(this.plugin.getOcrSettings?.()?.showToolbarButton)this.appendOcrControls(rightGroup);
 			const addPageButton = this.createPageMenuButton();
 			rightGroup.appendChild(addPageButton);
 			const moreButton = this.createIconButton("more-vertical", "More annotation actions", false, () => {
@@ -8055,6 +8283,9 @@ class NativePdfAnnotatorSession {
 			});
 			rightGroup.appendChild(moreButton);
 
+			rightGroup.setAttribute("role", "group");
+			rightGroup.setAttribute("aria-label", "Document actions");
+			rightGroup.scrollLeft = previousActionsScrollLeft;
 			this.toolbarEl.appendChild(leftGroup);
 			this.toolbarEl.appendChild(rightGroup);
 			this.toolbarEl.scrollTop = previousToolbarScrollTop;
@@ -8074,12 +8305,12 @@ class NativePdfAnnotatorSession {
 			touchModeButton.title = touchDrawing
 				? "Finger draws annotations. Tap to pan the page with one finger."
 				: "Finger pans the page. Apple Pencil and mouse continue drawing.";
-			leftGroup.appendChild(touchModeButton);
+			trailingToolButtons.push(touchModeButton);
 		}
 		let selectButton: HTMLButtonElement;
 		selectButton = this.createIconButton("move", "Select", this.currentTool === "select", () => {
 			if (this.currentTool === "select") {
-				this.openSelectionMenu(selectButton);
+				if (!quickOptions) this.openSelectionMenu(selectButton);
 				return;
 			}
 			this.setActiveTool("select");
@@ -8087,17 +8318,17 @@ class NativePdfAnnotatorSession {
 			this.refreshToolbar();
 		});
 		leftGroup.appendChild(selectButton);
-		if (this.currentTool === "select") {
+		if (this.currentTool === "select" && quickOptions) {
 			const selectionModeButton = this.createButton(
 				this.toolState.selectionMode === "lasso" ? "Lasso" : this.toolState.selectionMode === "box" ? "Box" : "Single",
 				false,
 				() => {
-					const targetButton = selectionModeButton;
-					this.openSelectionMenu(targetButton);
+					this.setSelectionMode(this.toolState.selectionMode === "single" ? "box" : this.toolState.selectionMode === "box" ? "lasso" : "single");
 				}
 			);
 			selectionModeButton.classList.add("pdf-native-annotator-mode-button");
-			leftGroup.appendChild(selectionModeButton);
+			selectionModeButton.title = "Selection mode. Click to cycle Single, Box and Lasso.";
+			trailingToolButtons.push(selectionModeButton);
 		}
 		if (this.plugin.shouldShowRegionToolbarButton()) {
 			leftGroup.appendChild(this.createIconButton("crop", "Region embed", this.currentTool === "region", () => {
@@ -8107,18 +8338,23 @@ class NativePdfAnnotatorSession {
 				this.refreshStatus("Region tool: drag a crop box");
 			}));
 		}
-		leftGroup.appendChild(this.createIconButton("pen-tool", "Pen", this.currentTool === "pen", () => {
+		const penButton=this.createIconButton("pen-tool", "Pen", this.currentTool === "pen", () => {
+			if(this.currentTool==="pen"){if(!quickOptions)this.openInkToolOptions(penButton,"pen");return;}
 			this.setActiveTool("pen");
 			this.applyOverlayMode();
 			this.refreshToolbar();
-		}));
-		leftGroup.appendChild(this.createIconButton("highlighter", "Highlighter", this.currentTool === "highlighter", () => {
+		});
+		leftGroup.appendChild(penButton);
+		const highlighterButton=this.createIconButton("highlighter", "Highlighter", this.currentTool === "highlighter", () => {
+			if(this.currentTool==="highlighter"){if(!quickOptions)this.openInkToolOptions(highlighterButton,"highlighter");return;}
 			this.setActiveTool("highlighter");
 			this.applyOverlayMode();
 			this.refreshToolbar();
-		}));
-		leftGroup.appendChild(this.createIconButton("eraser", `Eraser (${this.eraserMode})`, this.currentTool === "eraser", () => {
+		});
+		leftGroup.appendChild(highlighterButton);
+		const eraserButton = this.createIconButton("eraser", `Eraser (${this.eraserMode})`, this.currentTool === "eraser", () => {
 			if (this.currentTool === "eraser") {
+				if (!quickOptions) { this.openEraserModeMenu(eraserButton); return; }
 				this.toggleEraserMode();
 				return;
 			}
@@ -8126,8 +8362,9 @@ class NativePdfAnnotatorSession {
 			this.applyOverlayMode();
 			this.refreshToolbar();
 			this.refreshStatus(`Tool: Eraser (${this.eraserMode})`);
-		}));
-		if (this.currentTool === "eraser") {
+		});
+		leftGroup.appendChild(eraserButton);
+		if (this.currentTool === "eraser" && quickOptions) {
 			const eraserModeButton = this.createButton(
 				this.eraserMode === "segment" ? "Touch erase" : "Object erase",
 				false,
@@ -8136,39 +8373,20 @@ class NativePdfAnnotatorSession {
 				}
 			);
 			eraserModeButton.classList.add("pdf-native-annotator-mode-button");
-			leftGroup.appendChild(eraserModeButton);
+			trailingToolButtons.push(eraserModeButton);
 		}
 		leftGroup.appendChild(this.createIconButton("type", "Text", this.currentTool === "text", () => {
+			if (this.currentTool === "text") { const anchor = this.toolbarEl?.querySelector<HTMLButtonElement>("[aria-label='Text']"); if (!quickOptions && anchor) this.openTextStyleMenu(anchor); return; }
 			this.setActiveTool("text");
 			this.applyOverlayMode();
 			this.refreshToolbar();
 		}));
-		if (isTabletWebKitTouchDevice()) {
-			const shapeButton = this.createIconButton(
-				"shapes",
-				isShapeTool(this.currentTool) ? `Shapes (${this.currentTool})` : "Shapes",
-				isShapeTool(this.currentTool),
-				() => this.openShapeToolMenu(shapeButton)
-			);
-			shapeButton.classList.add("pdf-native-annotator-shape-menu-button");
-			leftGroup.appendChild(shapeButton);
-		} else {
-			leftGroup.appendChild(this.createIconButton("square", "Rectangle", this.currentTool === "rectangle", () => {
-				this.setActiveTool("rectangle");
-				this.applyOverlayMode();
-				this.refreshToolbar();
-			}));
-			leftGroup.appendChild(this.createIconButton("circle", "Ellipse", this.currentTool === "ellipse", () => {
-				this.setActiveTool("ellipse");
-				this.applyOverlayMode();
-				this.refreshToolbar();
-			}));
-			leftGroup.appendChild(this.createIconButton("minus", "Line", this.currentTool === "line", () => {
-				this.setActiveTool("line");
-				this.applyOverlayMode();
-				this.refreshToolbar();
-			}));
-		}
+		const shapeButton = this.createIconButton(
+			"shapes", this.toolState.shapeOptions.method === "drag" ? "Shapes: Drag to size" : "Shapes: Draw and hold",
+			isShapeTool(this.currentTool), () => this.openShapeToolMenu(shapeButton)
+		);
+		shapeButton.classList.add("pdf-native-annotator-shape-menu-button");
+		leftGroup.appendChild(shapeButton);
 
 		const activePresetKind = this.getActivePresetKind();
 		if (activePresetKind) {
@@ -8178,30 +8396,49 @@ class NativePdfAnnotatorSession {
 			for (const preset of this.toolState.getPresetsByKind(activePresetKind)) {
 				slots.appendChild(this.createPresetButton(preset));
 			}
-			leftGroup.appendChild(slots);
+			optionsGroup.appendChild(slots);
 		}
 
 		if (this.currentTool !== "eraser" && this.currentTool !== "region") {
-			leftGroup.appendChild(this.createColorPickerButton());
+			optionsGroup.appendChild(this.createColorPickerButton());
 		}
 
 		if (this.isStrokeSizedTool() || this.shouldApplyStyleToSelection()) {
 			const strokeControl = createDiv();
 			strokeControl.className = "pdf-native-annotator-stroke-control";
 			strokeControl.appendChild(this.createStrokeSizeButton());
-			leftGroup.appendChild(strokeControl);
+			optionsGroup.appendChild(strokeControl);
 		}
 
-		if (this.currentTool === "text" || (this.currentTool === "select" && this.hasSelectedText())) {
+		if (quickOptions && (this.currentTool === "text" || (this.currentTool === "select" && this.hasSelectedText()))) {
 			const textStyleButton = this.createButton("Font", false, () => {
 				this.openTextStyleMenu(textStyleButton);
 			});
 			textStyleButton.classList.add("pdf-native-annotator-mode-button", "pdf-native-annotator-font-button");
-			leftGroup.appendChild(textStyleButton);
+			optionsGroup.appendChild(textStyleButton);
 		}
+
+		if (quickOptions) {
+			const inkKind = this.currentTool === "pen" || this.currentTool === "highlighter" ? this.currentTool : undefined;
+			for (const control of contextualToolControls(this.currentTool, inkKind ? this.toolState.getInkToolOptions(inkKind) : undefined, this.toolState.shapeOptions, {
+				ink: (kind, patch) => {
+					this.toolState.setInkToolOptions(kind, { ...this.toolState.getInkToolOptions(kind), ...patch });
+					this.setActiveTool(kind); this.applyOverlayMode(); this.refreshToolbar();
+				},
+				shape: patch => this.configureShapeTool(patch)
+			})) {
+				const button = this.createButton(control.label, false, control.run);
+				button.classList.add("pdf-native-annotator-mode-button");
+				button.dataset.toolOption = control.id;
+				button.title = control.title;
+				trailingToolButtons.push(button);
+			}
+		}
+		for (const button of trailingToolButtons) optionsGroup.appendChild(button);
 
 		const rightGroup = createDiv();
 		rightGroup.className = "pdf-native-annotator-group is-actions";
+		if(this.plugin.getOcrSettings?.()?.showToolbarButton)this.appendOcrControls(rightGroup);
 
 		if (this.selectedTargets.length > 0) {
 			const selectionLabel = `Selection ${this.selectedTargets.length}`;
@@ -8239,14 +8476,20 @@ class NativePdfAnnotatorSession {
 		rightGroup.appendChild(moreButton);
 
 		this.toolbarEl.appendChild(leftGroup);
+		if (separateOptions) this.toolbarEl.appendChild(optionsGroup);
 		this.toolbarEl.appendChild(rightGroup);
+		rightGroup.setAttribute("role", "group");
+		rightGroup.setAttribute("aria-label", "Document actions");
+		rightGroup.scrollLeft = previousActionsScrollLeft;
 		this.toolbarEl.scrollTop = previousToolbarScrollTop;
-		this.restoreToolbarToolScroll(leftGroup, previousToolScrollLeft);
+		this.toolbarEl.scrollLeft = previousToolbarScrollLeft;
+		this.restoreToolbarToolScroll(leftGroup, previousToolScrollLeft, separateOptions ? optionsGroup : undefined, previousOptionsScrollLeft);
 		this.repositionOpenPopovers();
 	}
 
-	private restoreToolbarToolScroll(group: HTMLElement, scrollLeft: number): void {
+	private restoreToolbarToolScroll(group: HTMLElement, scrollLeft: number, optionsGroup?: HTMLElement, optionsScrollLeft = 0): void {
 		group.scrollLeft = scrollLeft;
+		if (optionsGroup) optionsGroup.scrollLeft = optionsScrollLeft;
 		if (this.toolbarScrollRestoreHandle !== null) {
 			this.ownerWindow.cancelAnimationFrame(this.toolbarScrollRestoreHandle);
 		}
@@ -8255,6 +8498,7 @@ class NativePdfAnnotatorSession {
 			if (group.isConnected) {
 				group.scrollLeft = scrollLeft;
 			}
+			if (optionsGroup?.isConnected) optionsGroup.scrollLeft = optionsScrollLeft;
 		});
 	}
 
@@ -8396,18 +8640,17 @@ class NativePdfAnnotatorSession {
 	private createPopoverCloseButton(onClick: () => void): HTMLButtonElement {
 		const button = createEl("button");
 		button.type = "button";
-		button.className = "modal-close-button pdf-native-annotator-popover-close";
+		button.className = "modal-close-button clickable-icon pdf-native-annotator-popover-close";
 		button.setAttribute("aria-label", "Close");
 		button.title = "Close";
 		setIcon(button, "x");
 		button.addEventListener("pointerdown", (event) => {
-			event.preventDefault();
 			event.stopPropagation();
-			onClick();
 		});
 		button.addEventListener("click", (event) => {
 			event.preventDefault();
 			event.stopPropagation();
+			onClick();
 		});
 		return button;
 	}
@@ -8417,13 +8660,13 @@ class NativePdfAnnotatorSession {
 	}
 
 	private positionPopoverNearRect(popover: HTMLElement, anchorRect: DOMRect, mode: "center" | "left" = "center"): void {
-		popover.setCssStyles({ maxHeight: "" });
-		const popoverRect = popover.getBoundingClientRect();
 		const visualViewport = this.ownerWindow.visualViewport;
 		const viewportLeft = visualViewport?.offsetLeft ?? 0;
 		const viewportTop = visualViewport?.offsetTop ?? 0;
 		const viewportWidth = visualViewport?.width ?? this.ownerWindow.innerWidth;
 		const viewportHeight = visualViewport?.height ?? this.ownerWindow.innerHeight;
+		popover.setCssStyles({ position: "fixed", margin: "0", transform: "none", right: "auto", bottom: "auto", maxWidth: `${Math.max(0, viewportWidth - 24)}px`, maxHeight: `${Math.max(0, viewportHeight - 24)}px` });
+		const popoverRect = popover.getBoundingClientRect();
 		const placement = resolveAnchoredPopoverPlacement(
 			anchorRect,
 			popoverRect,
@@ -8456,6 +8699,10 @@ class NativePdfAnnotatorSession {
 		if (!this.toolbarEl) {
 			return;
 		}
+		const shapePopover = this.transientPopovers.get("shape");
+		const inkTool = shapePopover?.dataset.inkTool;
+		const shapeAnchor = this.toolbarEl.querySelector<HTMLElement>(inkTool === "pen" ? "[aria-label='Pen drawing options']" : inkTool === "highlighter" ? "[aria-label='Highlighter drawing options']" : "[aria-label^='Shapes']");
+		if (shapePopover && shapeAnchor) this.positionPopoverNearAnchor(shapePopover, shapeAnchor);
 		const strokeAnchor = this.toolbarEl.querySelector<HTMLElement>(".pdf-native-annotator-stroke-button");
 		const strokePopover = this.transientPopovers.get("stroke");
 		if (strokePopover && strokeAnchor) {
@@ -8498,16 +8745,13 @@ class NativePdfAnnotatorSession {
 		button.className = "pdf-native-annotator-preset";
 		button.classList.add(`is-${preset.kind}`);
 		button.title = `${preset.label}: ${preset.kind} ${preset.width}`;
-		button.setAttribute("aria-label", preset.label);
+		button.setAttribute("aria-label", `${preset.label}: ${preset.kind} ${preset.width} px`);
 		if (this.toolState.selectedPresetId === preset.id) {
 			button.classList.add("is-active");
 		}
 		const preview = createSpan();
 		preview.className = "pdf-native-annotator-preset-preview";
-		preview.setCssStyles({
-			height: `${Math.max(4, Math.min(14, preset.width))}px`,
-			width: `${Math.max(18, Math.min(34, preset.width * 2.6))}px`
-		});
+		this.updatePresetPreviewElement(preview, preset.width);
 		if (preset.kind !== "eraser") {
 			preview.setCssStyles({
 				backgroundColor: preset.color,
@@ -8656,19 +8900,21 @@ class NativePdfAnnotatorSession {
 
 		const activePresetPreview = this.toolbarEl?.querySelector<HTMLElement>(".pdf-native-annotator-preset.is-active .pdf-native-annotator-preset-preview");
 		this.updatePresetPreviewElement(activePresetPreview, width);
+		const activePreset = activePresetPreview?.closest<HTMLElement>(".pdf-native-annotator-preset");
+		if (activePreset) { activePreset.title = `${this.getStrokePopoverTitle()}: ${width.toFixed(1)} px`; activePreset.setAttribute("aria-label", activePreset.title); }
 	}
 	private updatePresetPreviewElement(preview: HTMLElement | null | undefined, width: number): void {
 		if (!preview) {
 			return;
 		}
 		preview.setCssStyles({
-			height: `${Math.max(4, Math.min(14, width))}px`,
-			width: `${Math.max(18, Math.min(34, width * 2.6))}px`
+			height: `${width * .3}px`,
+			width: "28px"
 		});
 	}
 
 	private getWidthStorageTool(tool: AnnotationTool = this.currentTool): AnnotationTool {
-		return isShapeTool(tool) ? "pen" : tool;
+		return tool;
 	}
 
 	private setToolbarWidth(width: number, refresh = true, targetTool: AnnotationTool = this.currentTool, pushSelectionHistory = true): void {
@@ -8798,14 +9044,14 @@ class NativePdfAnnotatorSession {
 		if (this.currentTool === "line") {
 			return "Line thickness";
 		}
-		if (this.currentTool === "rectangle" || this.currentTool === "ellipse") {
+		if (isShapeTool(this.currentTool)) {
 			return "Shape thickness";
 		}
 		return "Pen thickness";
 	}
 
 	private getWidthRange(tool: AnnotationTool = this.currentTool): { min: number; max: number; step: number } {
-		if (tool === "highlighter") {
+		if (tool === "highlighter" || isShapeTool(tool) && this.toolState.shapeOptions.appearance === "highlighter") {
 			return TOOL_WIDTH_RANGES.highlighter;
 		}
 		if (tool === "eraser") {
@@ -8904,26 +9150,106 @@ class NativePdfAnnotatorSession {
 		this.previewState.hide();
 		this.toolPreviewEl?.classList.add("is-hidden");
 	}
-	private openShapeToolMenu(button: HTMLButtonElement): void {
-		const menu = new Menu();
-		const shapeTools: Array<{ tool: ShapeTool; label: string; icon: string }> = [
-			{ tool: "rectangle", label: "Rectangle", icon: "square" },
-			{ tool: "ellipse", label: "Ellipse", icon: "circle" },
-			{ tool: "line", label: "Line", icon: "minus" }
-		];
-		addMenuDescriptors(menu, shapeTools.map((shape) => ({
-			title: shape.label,
-			icon: shape.icon,
-			checked: this.currentTool === shape.tool,
-			run: () => {
-				this.setActiveTool(shape.tool);
-				this.applyOverlayMode();
-				this.refreshToolbar();
-				this.refreshStatus(`Tool: ${shape.label}`);
-			}
-		})));
+	selectToolFromCommand(tool: AnnotationTool): void {
+		if (this.hasActivePdfPointerInteraction()) this.cancelActiveSessionInteraction();
+		this.setActiveTool(tool);
+		this.applyOverlayMode();
+		this.refreshToolbar();
+	}
+
+	setInkToolDrawingMode(kind: InkToolKind, mode: InkDrawingMode): void {
+		if (this.hasActivePdfPointerInteraction()) this.cancelActiveSessionInteraction();
+		this.toolState.setInkToolOptions(kind, { ...this.toolState.getInkToolOptions(kind), mode });
+		this.setActiveTool(kind);
+		this.applyOverlayMode();
+		this.refreshToolbar();
+		this.refreshStatus(`${kind === "highlighter" ? "Highlighter" : "Pen"}: ${mode === "freehand" ? "Freehand" : mode === "straight" ? "Straight line" : "Draw and hold"}`);
+	}
+
+	setInkToolLineStyle(kind: InkToolKind, lineStyle: ShapeLineStyle): void {
+		const options = this.toolState.getInkToolOptions(kind);
+		this.toolState.setInkToolOptions(kind, { ...options, lineStyle });
+		this.setInkToolDrawingMode(kind, "straight");
+	}
+
+	chooseToolPreset(kind: ToolPresetKind, index: number): void {
+		const preset = this.toolState.getPresetsByKind(kind)[index];
+		if (preset) this.applyPreset(preset.id);
+	}
+
+	configureShapeTool(next: Partial<ShapeOptions>): void {
+		if (this.hasActivePdfPointerInteraction()) this.cancelActiveSessionInteraction();
+		this.toolState.setShapeOptions({ ...this.toolState.shapeOptions, ...next });
+		const options = this.toolState.shapeOptions;
+		this.setActiveTool(options.shape === "auto" ? "line" : options.shape);
+		this.applyOverlayMode();
+		this.refreshToolbar();
+	}
+
+	applyShapeToolOptions(options: ShapeOptions): void {
+		if (this.shapeGestureOptions) this.cancelActiveSessionInteraction();
+		const active = isShapeTool(this.currentTool);
+		this.toolState.setShapeOptions(options);
+		const next = this.toolState.shapeOptions.shape;
+		if (active) this.toolState.setActiveTool(next === "auto" ? "line" : next);
+		this.applyOverlayMode(); this.refreshToolbar();
+	}
+
+	reshapeSelectedShapes(kind: "circle" | "square" | "equilateral" | "right"): void {
+		const ids = new Set(this.selectedTargets.filter(target => target.kind === "shape").map(target => target.id));
+		const shapes = this.annotationDocument?.shapes.filter(shape => ids.has(shape.id) && (kind === "circle" ? shape.tool === "ellipse" : kind === "square" ? shape.tool === "rectangle" : kind === "right" ? shape.tool === "triangle" || shape.tool === "line" : shape.tool === "triangle")) ?? [];
+		if (!shapes.length) { this.refreshStatus("Select a matching shape first."); return; }
+		this.pushHistory();
+		for (const shape of shapes) {
+			const surface = this.pageSurfaces.get(shape.page);
+			const aspect = surface ? surface.lastHeight / Math.max(1, surface.lastWidth) : shape.aspectRatio ?? 1.414;
+			Object.assign(shape, constrainShape(shape, aspect, kind === "right" ? "right" : "regular"));
+		}
+		this.markDirtyAndRedraw("Reshaped selection");
+	}
+
+	private openInkToolOptions(button: HTMLButtonElement, kind: InkToolKind): void {
+		if ((this.plugin.getToolOptionsPresentation?.() ?? "buttons") !== "menus") return;
+		if (this.hasActivePdfPointerInteraction()) this.cancelActiveSessionInteraction();
+		const apply = (patch: Partial<InkToolOptions>) => {
+			this.toolState.setInkToolOptions(kind, { ...this.toolState.getInkToolOptions(kind), ...patch });
+			this.setActiveTool(kind);
+			this.applyOverlayMode();
+			this.refreshToolbar();
+		};
 		const rect = button.getBoundingClientRect();
-		this.showExclusiveMenuAtPosition(menu, { x: rect.left, y: rect.bottom + 6 });
+		const position = { x: rect.left, y: rect.bottom + 6 };
+		const menu = new Menu();
+		addMenuDescriptors(menu, inkToolMenuItems(this.toolState.getInkToolOptions(kind), apply, () => {
+			const sizes = new Menu();
+			addMenuDescriptors(sizes, inkWaveSizeMenuItems(this.toolState.getInkToolOptions(kind).waveSize, waveSize => apply({ waveSize })));
+			this.showExclusiveMenuAtPosition(sizes, position);
+		}));
+		this.showExclusiveMenuAtPosition(menu, position);
+	}
+
+	private openShapeToolMenu(button: HTMLButtonElement): void {
+		const alreadyActive=isShapeTool(this.currentTool);
+		if (alreadyActive && (this.plugin.getToolOptionsPresentation?.() ?? "buttons") !== "menus") return;
+		this.beginExclusiveMenu();
+		if (this.shapeGestureOptions) this.cancelActiveSessionInteraction();
+		if (!alreadyActive) {
+			const kind = "pen";
+			const presetId = this.toolState.snapshot.selectedPresetIds?.[kind];
+			const preset = this.toolState.getPresetsByKind(kind).find(item => item.id === presetId);
+			this.toolState.setShapeOptions({ ...this.toolState.shapeOptions, pen: { color: preset?.color ?? this.toolState.shapeOptions.pen.color, width: this.toolState.getWidth("pen"), opacity: preset?.opacity ?? .96 } });
+		}
+		const options = this.toolState.shapeOptions;
+		this.setActiveTool(options.shape === "auto" ? "line" : options.shape);
+		this.applyOverlayMode(); this.refreshToolbar();
+		if(!alreadyActive)return;
+		const popover = createShapeOptionsPopover(this.ownerDocument, options, next => {
+			this.toolState.setShapeOptions(next);
+			this.setActiveTool(next.shape === "auto" ? "line" : next.shape);
+			this.applyOverlayMode(); this.refreshToolbar();
+		}, () => this.transientPopovers.close("shape"));
+		this.transientPopovers.open("shape", popover);
+		this.positionPopoverNearAnchor(popover, this.toolbarEl?.querySelector<HTMLElement>("[aria-label^='Shapes']") ?? button);
 	}
 
 	private toggleEraserMode(): void {
@@ -8933,6 +9259,16 @@ class NativePdfAnnotatorSession {
 		this.refreshToolbar();
 		this.refreshToolPreviewFromLastPointer(false);
 		this.refreshStatus(nextMode === "object" ? "Eraser mode: whole object" : "Eraser mode: touch section");
+	}
+
+	private openEraserModeMenu(button: HTMLButtonElement): void {
+		const menu = new Menu();
+		addMenuDescriptors(menu, ([{ mode: "segment", title: "Touch erase" }, { mode: "object", title: "Object erase" }] as const).map(item => ({
+			title: item.title, checked: this.eraserMode === item.mode,
+			run: () => { if (this.eraserMode !== item.mode) this.toggleEraserMode(); }
+		})));
+		const rect = button.getBoundingClientRect();
+		this.showExclusiveMenuAtPosition(menu, { x: rect.left, y: rect.bottom + 6 });
 	}
 
 	private openSelectionMenu(button: HTMLButtonElement): void {
@@ -8960,6 +9296,9 @@ class NativePdfAnnotatorSession {
 			{ title: "Select all on page (Ctrl/Cmd+A)", icon: "list-plus", run: () => this.selectAllCurrentPageAnnotations() }
 		];
 		if (hasAnnotationSelection) {
+			if (this.plugin.getOcrSettings?.().copyHandwritingAsText) descriptors.push(
+				{ title: "Copy handwriting", icon: "pen-line", run: () => this.copySelectedTargets(true) }
+			);
 			descriptors.push(
 				menuSeparator,
 				{ title: "Copy selection (Ctrl/Cmd+C)", icon: "copy", run: () => this.copySelectedTargets() },
@@ -8970,6 +9309,12 @@ class NativePdfAnnotatorSession {
 				{ title: "Bring to front (Ctrl/Cmd+])", icon: "bring-to-front", run: () => this.reorderSelectedTargets("front") },
 				{ title: "Send to back (Ctrl/Cmd+[)", icon: "send-to-back", run: () => this.reorderSelectedTargets("back") }
 			);
+			const selectedShapes = this.annotationDocument?.shapes.filter(shape => this.selectedTargets.some(target => target.kind === "shape" && target.id === shape.id)) ?? [];
+			if (selectedShapes.length) descriptors.push(menuSeparator);
+			if (selectedShapes.some(shape => shape.tool === "ellipse")) descriptors.push({ title: "Make circle", icon: "circle", run: () => this.reshapeSelectedShapes("circle") });
+			if (selectedShapes.some(shape => shape.tool === "rectangle")) descriptors.push({ title: "Make square", icon: "square", run: () => this.reshapeSelectedShapes("square") });
+			if (selectedShapes.some(shape => shape.tool === "triangle")) descriptors.push({ title: "Make equilateral triangle", icon: "triangle", run: () => this.reshapeSelectedShapes("equilateral") });
+			if (selectedShapes.some(shape => shape.tool === "triangle" || shape.tool === "line")) descriptors.push({ title: "Make right-angle triangle or line", icon: "triangle-right", run: () => this.reshapeSelectedShapes("right") });
 		}
 		if (this.plugin.hasClipboard()) {
 			descriptors.push(
@@ -9004,12 +9349,24 @@ class NativePdfAnnotatorSession {
 		this.showExclusiveMenuAtPosition(menu, { x: rect.left, y: rect.bottom + 6 });
 	}
 
+	private syncSelectableText(surface: PageSurface): void {
+		const pageHot = this.shouldKeepPageHot(surface.pageNumber);
+		const ocrLayer = surface.hostEl.querySelector(".freedraw-pdf-ocr-text-layer");
+		if (this.annotationDocument?.ocrGroups?.some(group => group.page === surface.pageNumber)) {
+			if (pageHot || ocrLayer) syncOcrTextLayer(surface.hostEl, this.annotationDocument, surface.pageNumber, surface.lastWidth, surface.lastHeight, this.getPageFrameKey?.(surface));
+		} else ocrLayer?.remove();
+		if (!this.annotationMode && !pageHot && !surface.hostEl.querySelector(".freedraw-pdf-readonly-text-layer")) return;
+		const items = this.annotationDocument ? this.getPageAnnotationBucket(surface.pageNumber).textItems : [];
+		syncReadOnlyTextLayer(surface.hostEl, items, surface.lastWidth, surface.lastHeight, this.annotationMode);
+	}
+
 	private applyOverlayMode(): void {
 		const enabled = this.annotationMode && this.file?.path === this.getPdfFile()?.path;
 		if (!this.annotationMode || !isInkDrawingTool(this.currentTool) || this.getInkInputPolicy() !== "pen-mouse-only") {
 			this.finishFingerPan(false);
 		}
 		for (const surface of this.pageSurfaces.values()) {
+			this.syncSelectableText(surface);
 			const cursorTool = enabled ? this.currentTool : "disabled";
 			const cursor = resolveOverlayModeCursor(
 				cursorTool,
@@ -9056,9 +9413,18 @@ class NativePdfAnnotatorSession {
 	}
 
 	private readonly handleSessionKeyDown = (event: KeyboardEvent): void => {
+		if (this.shapeGestureOptions && ["Shift", "Alt", "Control", "Meta"].includes(event.key)) { this.updateShapeModifiers(event); return; }
+		if(isDomElement(event.target)&&event.target.closest(".freedraw-pdf-ocr-selectable"))return;
 		if (this.handleInlineTextEditorShortcut(event)) {
 			event.preventDefault();
 			event.stopPropagation();
+			return;
+		}
+		const editor = this.inlineTextEditorEl;
+		if (editor && (event.target === editor || editor.ownerDocument.activeElement === editor) &&
+			["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
+			// Stop PDF navigation listeners; retain the browser's native caret/selection action.
+			event.stopImmediatePropagation();
 			return;
 		}
 		if (event.key === "Escape" && this.isSessionEscapeEligible(event) && this.cancelActiveSessionInteraction()) {
@@ -9186,6 +9552,26 @@ class NativePdfAnnotatorSession {
 		return false;
 	}
 
+	private activateInlineTextKeyboardScope(editor: HTMLTextAreaElement): void {
+		this.releaseInlineTextKeyboardScope();
+		if (this.inlineTextEditorEl !== editor || editor.ownerDocument.activeElement !== editor) return;
+		const scope = new Scope(this.leaf.view.scope ?? this.plugin.app.scope);
+		for (const key of ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"]) scope.register(null, key, () => true);
+		this.inlineTextKeyboardScope = scope;
+		this.plugin.app.keymap.pushScope(scope);
+	}
+
+	private releaseInlineTextKeyboardScope(): void {
+		if (!this.inlineTextKeyboardScope) return;
+		this.plugin.app.keymap.popScope(this.inlineTextKeyboardScope);
+		this.inlineTextKeyboardScope = null;
+	}
+
+	private readonly handleSessionWindowFocus = (): void => {
+		const editor = this.inlineTextEditorEl;
+		if (editor) this.activateInlineTextKeyboardScope(editor);
+	};
+
 
 	private isSessionEscapeEligible(event: KeyboardEvent): boolean {
 		if (!this.annotationMode || !this.isLeafActive()) {
@@ -9213,12 +9599,14 @@ class NativePdfAnnotatorSession {
 	}
 
 	private readonly handleSessionKeyUp = (event: KeyboardEvent): void => {
+		if (this.shapeGestureOptions && ["Shift", "Alt", "Control", "Meta"].includes(event.key)) this.updateShapeModifiers(event);
 		if (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "ArrowUp" || event.key === "ArrowDown") {
 			this.keyboardNudgeHistoryOpen = false;
 		}
 	};
 
 	private readonly handleSessionWindowBlur = (): void => {
+		this.releaseInlineTextKeyboardScope();
 		this.keyboardNudgeHistoryOpen = false;
 	};
 
@@ -9368,6 +9756,7 @@ class NativePdfAnnotatorSession {
 	}
 
 	private readonly handleViewPointerDown = (event: PointerEvent): void => {
+		if(isDomElement(event.target)&&event.target.closest(".freedraw-pdf-ocr-selectable"))return;
 		if (shouldPanInkPointerEvent(event, this.currentTool, this.getInkInputPolicy())) {
 			return;
 		}
@@ -9393,6 +9782,7 @@ class NativePdfAnnotatorSession {
 	};
 
 	private readonly handleDocumentPointerDown = (event: PointerEvent): void => {
+		if(isDomElement(event.target)&&event.target.closest(".freedraw-pdf-ocr-selectable"))return;
 		if (this.handleFingerPanPointerDown(event)) {
 			return;
 		}
@@ -9420,6 +9810,7 @@ class NativePdfAnnotatorSession {
 	}
 
 	private readonly handleDocumentTouchStart = (event: TouchEvent): void => {
+		if(isDomElement(event.target)&&event.target.closest(".freedraw-pdf-ocr-selectable"))return;
 		const pendingPointer = this.pendingWebKitTouchPointer;
 		const touches = Array.from(event.changedTouches) as Array<Touch & {
 			altitudeAngle?: number;
@@ -9691,6 +10082,7 @@ class NativePdfAnnotatorSession {
 	}
 
 	private isPointerTargetInsidePdfPage(target: Element): boolean {
+		if(target.closest(".freedraw-pdf-ocr-selectable"))return false;
 		const viewContentEl = this.getViewContentEl();
 		if (!viewContentEl?.contains(target)) {
 			return false;
@@ -9991,23 +10383,11 @@ class NativePdfAnnotatorSession {
 			return;
 		}
 
-		if (isShapeTool(this.currentTool)) {
-			this.pushHistory();
-			const zIndex = this.getNextPageZIndex(pageNumber);
-			this.currentShape = {
-				id: generateId("shape"),
-				page: pageNumber,
-				tool: this.currentTool,
-				color: this.currentColor,
-				width: this.toolState.getWidth("pen"),
-				widthScale: this.getStableAnnotationWidthScale(this.toolState.getWidth("pen")),
-				start: point,
-				end: point,
-				zIndex,
-				createdAt: new Date().toISOString()
-			};
-			this.pointerPage = pageNumber;
-			this.drawPageAnnotations(pageNumber);
+		const inkShapeOptions = this.currentTool === "pen" || this.currentTool === "highlighter"
+			? this.toolState.getInkShapeOptions(this.currentTool, isDrawingModifierHeld(event, this.plugin.getDrawingModifier?.() ?? "shift"))
+			: null;
+		if (isShapeTool(this.currentTool) || inkShapeOptions) {
+			this.startShapeGesture(surface, event, point, inkShapeOptions ?? false);
 			return;
 		}
 
@@ -10030,6 +10410,115 @@ class NativePdfAnnotatorSession {
 		this.drawTransientPageAnnotations(pageNumber);
 		this.showDrawingNotice(`New stroke on page ${pageNumber}`, 900);
 		this.refreshStatus(`Stroke started: ${this.currentTool}, page ${pageNumber}, points 1`, 900);
+	}
+
+	private clearShapeGesture(): void {
+		this.shapeHold?.cancel(); this.shapeHold = null;
+		this.shapeUnconstrainedPreview = null;
+		this.assistedShapeSource = null; this.shapeGestureOptions = null;
+	}
+
+	private constrainShapePreview(shape: ShapeAnnotation | null): ShapeAnnotation | null {
+		if (!shape || !isShapeTool(this.currentTool)) return shape;
+		const constraint: ShapeConstraint | null = shape.tool === "triangle" && this.shapeModifierState.right ? "right" : this.shapeModifierState.regular ? "regular" : null;
+		return constraint ? constrainShape(shape, shape.aspectRatio ?? 1, constraint) : shape;
+	}
+
+	private updateShapeModifiers(event: Pick<KeyboardEvent, "shiftKey" | "altKey" | "ctrlKey" | "metaKey">): void {
+		this.shapeModifierState = { regular: isDrawingModifierHeld(event, this.plugin.getDrawingModifier?.() ?? "shift"), right: isDrawingModifierHeld(event, this.plugin.getRightTriangleModifier?.() ?? "alt") };
+		if (this.shapeUnconstrainedPreview) {
+			this.currentShape = this.constrainShapePreview(this.shapeUnconstrainedPreview);
+			if (this.pointerPage !== null) this.drawTransientPageAnnotations(this.pointerPage);
+		}
+	}
+
+	private startShapeGesture(surface: PageSurface, event: PointerEvent, point: AnnotationPoint, shortcut: boolean | ShapeOptions): void {
+		this.clearShapeGesture();
+		this.updateShapeModifiers(event);
+		const options = typeof shortcut === "object" ? shortcut : this.toolState.shapeOptions;
+		if (shortcut === true) {
+			options.method = "drag"; options.shape = "line"; options.lineStyle = "solid"; options.appearance = "highlighter";
+			options.highlighter = { color: this.currentColor, width: this.toolState.getWidth("highlighter"), opacity: this.toolState.activeOpacity };
+		}
+		const style = options[options.appearance];
+		const source: StrokeAnnotation = { id: generateId("stroke"), page: surface.pageNumber, tool: options.appearance, color: style.color,
+			width: style.width, widthScale: this.getStableAnnotationWidthScale(style.width), opacity: style.opacity,
+			inkSettings: { ...this.plugin.getInkRenderSettings() }, points: [point], zIndex: this.getNextPageZIndex(surface.pageNumber), createdAt: new Date().toISOString() };
+		this.assistedShapeSource = source; this.shapeGestureOptions = options; this.pointerPage = surface.pageNumber;
+		const shapeFrom = (fit: ReturnType<typeof fitGesture>): ShapeAnnotation | null => fit ? {
+			id: source.id, page: source.page, tool: fit.tool, color: source.color, width: source.width, widthScale: source.widthScale,
+			opacity: source.opacity, appearance: source.tool, start: fit.start, end: fit.end, vertices: fit.vertices,
+			aspectRatio: surface.lastHeight / Math.max(1, surface.lastWidth), lineStyle: fit.tool === "line" && options.shape === "line" ? options.lineStyle : "solid", waveSize: options.waveSize,
+			zIndex: source.zIndex, createdAt: source.createdAt } : null;
+		if (options.method === "drag") {
+			this.shapeUnconstrainedPreview = shapeFrom({ tool: options.shape === "auto" ? "line" : options.shape, start: point, end: point, score: 0 });
+			this.currentShape = this.constrainShapePreview(this.shapeUnconstrainedPreview);
+		} else {
+			this.currentStroke = source;
+			const rect = this.activePdfPointerRect ?? surface.overlayEl.getBoundingClientRect();
+			this.shapeHold = new HoldGesture(this.ownerWindow, point, { width: rect.width, height: rect.height, tolerance: event.pointerType === "touch" ? 7 : event.pointerType === "pen" ? 4 : 3 }, () => {
+				if (this.assistedShapeSource !== source || this.pointerPage !== source.page || !surface.overlayEl.isConnected) return;
+				const fit = fitGesture(source.points, options.shape, surface.lastHeight / Math.max(1, surface.lastWidth));
+				this.shapeUnconstrainedPreview = shapeFrom(fit);
+				this.currentShape = this.constrainShapePreview(this.shapeUnconstrainedPreview); this.currentStroke = fit ? null : source;
+				this.drawTransientPageAnnotations(source.page);
+				this.refreshStatus(fit ? `Fitted ${fit.tool}. Release to keep; move to continue drawing.` : "Kept freehand: no clear shape found.");
+				return !!fit;
+			}, () => { this.shapeUnconstrainedPreview = null; this.currentShape = null; this.currentStroke = source; this.scheduleInteractionRedraw(source.page); });
+		}
+		this.currentStrokeRenderedPointCount = 0;
+		this.drawTransientPageAnnotations(source.page);
+	}
+
+	private finishShapeGesture(event: PointerEvent, canvas: HTMLCanvasElement | null): void {
+		this.updateShapeModifiers(event);
+		const source = this.assistedShapeSource, options = this.shapeGestureOptions;
+		const surface = source ? this.pageSurfaces.get(source.page) : null;
+		this.shapeHold?.cancel();
+		if (!source || !options || !surface || !this.annotationDocument) { this.cancelActiveSessionInteraction(); return; }
+		const rect = this.activePdfPointerRect ?? surface.overlayEl.getBoundingClientRect();
+		// Read position without advancing the pressure/sample clock before the
+		// coalesced release batch has been captured by the normal ink helper.
+		const position = (sample: PointerEvent): AnnotationPoint => ({ x: clamp((sample.clientX - rect.left) / Math.max(1, rect.width), 0, 1), y: clamp((sample.clientY - rect.top) / Math.max(1, rect.height), 0, 1), pressure: .5 });
+		const end = position(event);
+		if (options.method === "hold") {
+			// A final movement can invalidate a hold preview, but cannot recognize or
+			// commit later. Keep the entire release batch for the original Undo ink.
+			for (const sample of getCoalescedPointerEvents(event)) {
+				if (!(sample.timeStamp > 0 && sample.timeStamp < this.lastPdfPointTime)) this.shapeHold?.move(position(sample));
+			}
+			this.shapeHold?.cancel();
+			const fitted = this.currentShape;
+			this.currentStroke = source;
+			this.appendFinalStrokeSamples(surface, event, rect);
+			if (fitted) this.currentStroke = null;
+		} else if (this.shapeUnconstrainedPreview) {
+			this.shapeUnconstrainedPreview.end = end;
+			this.currentShape = this.constrainShapePreview(this.shapeUnconstrainedPreview);
+		}
+		const shape = this.currentShape;
+		const size = shape ? Math.hypot((shape.end.x - shape.start.x) * surface.lastWidth, (shape.end.y - shape.start.y) * surface.lastHeight) : 0;
+		if (shape && (size < 2 || shape.tool !== "line" && (Math.abs(shape.end.x - shape.start.x) * surface.lastWidth < 1 || Math.abs(shape.end.y - shape.start.y) * surface.lastHeight < 1))) { this.cancelActiveSessionInteraction(); return; }
+		this.unbindPdfPointerDocumentTracking(); this.cancelPendingInteractionRedraw();
+		if (options.method === "hold") {
+			this.pushStrokeAddHistory(source);
+			this.annotationDocument.strokes.push(source);
+			if (shape) {
+				// Two undo steps, one save: source ink first, then its fitted replacement.
+				this.pushHistory();
+				this.annotationDocument.strokes = this.annotationDocument.strokes.filter(stroke => stroke !== source);
+				this.annotationDocument.shapes.push(shape);
+			}
+		} else if (shape) { this.pushHistory(); this.annotationDocument.shapes.push(shape); }
+		// Keep the final preview visible while the committed page redraw is queued.
+		// Only this page is invalidated; unrelated ink frames retain their caches.
+		this.promoteCurrentTransientPreview(source.page);
+		this.currentStroke = null; this.currentShape = null; this.pointerPage = null; this.currentStrokeRenderedPointCount = 0;
+		this.clearShapeGesture();
+		this.invalidateAnnotationPageCache(source.page); this.documentRevision++; this.isDirty = true; this.scheduleSave();
+		this.deferCommittedPageRedraw(source.page); this.scheduleMotionPreviewPreparation();
+		this.refreshStatus(shape ? "Shape saved" : "Freehand saved");
+		if (canvas) canvas.setCssStyles({ touchAction: this.getOverlayTouchAction() });
 	}
 
 	private hasActivePdfPointerInteraction(): boolean {
@@ -10057,6 +10546,7 @@ class NativePdfAnnotatorSession {
 	}
 
 	private forceFinishStalePdfInteraction(message: string): void {
+		if (this.shapeGestureOptions) { this.cancelActiveSessionInteraction(); return; }
 		this.finishFingerPan(false);
 		this.cancelFingerPanInertia();
 		if (!this.hasActivePdfPointerInteraction()) {
@@ -10126,6 +10616,7 @@ class NativePdfAnnotatorSession {
 	}
 
 	private commitActiveInkBeforeLayoutRefresh(): void {
+		if (this.shapeGestureOptions) { this.cancelActiveSessionInteraction(); return; }
 		if (!this.annotationDocument) {
 			return;
 		}
@@ -10274,6 +10765,18 @@ class NativePdfAnnotatorSession {
 			return;
 		}
 		const point = points[points.length - 1];
+		if (this.shapeGestureOptions && this.assistedShapeSource) {
+			this.updateShapeModifiers(event);
+			if (this.shapeGestureOptions.method === "hold") {
+				appendStrokePoints(this.assistedShapeSource, points, { mergeThreshold: this.getStrokeMergeThreshold(surface) });
+				for (const sample of points) this.shapeHold?.move(sample);
+			} else if (this.shapeUnconstrainedPreview) {
+				this.shapeUnconstrainedPreview.end = point;
+				this.currentShape = this.constrainShapePreview(this.shapeUnconstrainedPreview);
+			}
+			this.scheduleInteractionRedraw(pageNumber);
+			return;
+		}
 		if ((this.currentTool === "select" || this.currentTool === "text") && this.selectedTarget && this.dragAnchor && !this.currentLasso) {
 			const deltaX = point.x - this.dragAnchor.x;
 			const deltaY = point.y - this.dragAnchor.y;
@@ -10285,6 +10788,7 @@ class NativePdfAnnotatorSession {
 					this.moveSelectedTargetsWithinPage(this.selectedTargets, deltaX, deltaY);
 				}
 				this.dragAnchor = point;
+				this.invalidateAnnotationPageCache(pageNumber);
 				this.scheduleInteractionRedraw(pageNumber);
 			}
 			return;
@@ -10361,6 +10865,7 @@ class NativePdfAnnotatorSession {
 	};
 
 	private handlePointerUpForCanvas(event: PointerEvent, canvas: HTMLCanvasElement | null): void {
+		this.shapeHold?.cancel();
 		const pointerRect = this.activePdfPointerRect;
 		const isInkInput = isInkDrawingTool(this.currentTool);
 		if (isInkInput) {
@@ -10390,6 +10895,7 @@ class NativePdfAnnotatorSession {
 			this.currentStroke !== null ||
 			this.currentShape !== null;
 		if (!hasActiveInteraction || this.pointerPage === null || pageNumber !== this.pointerPage || !this.annotationDocument) {
+			this.clearShapeGesture();
 			this.unbindPdfPointerDocumentTracking();
 			this.currentStroke = null;
 			this.currentShape = null;
@@ -10398,6 +10904,10 @@ class NativePdfAnnotatorSession {
 			this.lastEraserPoint = null;
 			this.eraserSessionPoints = [];
 			this.pointerPage = null;
+			return;
+		}
+		if (this.shapeGestureOptions) {
+			this.finishShapeGesture(event, canvas);
 			return;
 		}
 		if (this.currentTool === "eraser" && this.erasingSession && canvas) {
@@ -10691,9 +11201,9 @@ class NativePdfAnnotatorSession {
 			event,
 			this.lastPdfPoint,
 			this.lastPdfPointTime,
-			this.currentStroke?.inkSettings?.pressureMode ?? this.plugin.getInkRenderSettings().pressureMode,
+			(this.currentStroke ?? this.assistedShapeSource)?.inkSettings?.pressureMode ?? this.plugin.getInkRenderSettings().pressureMode,
 			this.webKitStylusPointerId === event.pointerId,
-			this.currentStroke?.points[this.currentStroke.points.length - 1]?.pressure
+			this.currentStroke?.points[this.currentStroke.points.length - 1]?.pressure ?? this.assistedShapeSource?.points[this.assistedShapeSource.points.length - 1]?.pressure
 		);
 		const point = {
 			x: clamp((event.clientX - rect.left) / width, 0, 1),
@@ -10747,7 +11257,10 @@ class NativePdfAnnotatorSession {
 			return;
 		}
 		const minDistance = Math.max(this.getEraserThreshold(pageNumber) * 0.25, 0.0008);
-		if (distanceBetween(lastPoint, point) >= minDistance) {
+		const anchor = this.eraserSessionPoints[Math.max(0, this.eraserSessionPoints.length - 2)];
+		// Keep the starting anchor and only replace a provisional tail. Comparing
+		// solely with that moving tail discards an entire slow erase gesture.
+		if (this.eraserSessionPoints.length === 1 || distanceBetween(lastPoint, point) >= minDistance || distanceBetween(anchor, point) >= minDistance) {
 			this.eraserSessionPoints.push(point);
 		} else {
 			this.eraserSessionPoints[this.eraserSessionPoints.length - 1] = point;
@@ -10830,13 +11343,17 @@ class NativePdfAnnotatorSession {
 		if (!this.annotationDocument) {
 			return false;
 		}
-		return eraseStrokeSegmentsAlongPath(
+		if(this.annotationDocument.ocrGroups?.length)this.getPageAnnotationBucket(pageNumber);
+		const strokesChanged = eraseStrokeSegmentsAlongPath(
 			this.annotationDocument,
 			pageNumber,
 			points,
 			threshold,
-			() => generateId("stroke")
+			() => generateId("stroke"),
+			this.ocrHiddenStrokeIds
 		);
+		const shapesChanged = eraseShapeSegmentsAlongPath(this.annotationDocument, pageNumber, points, threshold);
+		return strokesChanged || shapesChanged;
 	}
 
 	private removeEraseTargets(targets: SelectedTarget[]): boolean {
@@ -10962,6 +11479,7 @@ class NativePdfAnnotatorSession {
 			return [];
 		}
 		const candidates: HitCandidate[] = [];
+		if(this.annotationDocument.ocrGroups?.length)this.getPageAnnotationBucket(pageNumber);
 
 		for (let index = this.annotationDocument.textItems.length - 1; index >= 0; index -= 1) {
 			const item = this.annotationDocument.textItems[index];
@@ -10991,7 +11509,9 @@ class NativePdfAnnotatorSession {
 				continue;
 			}
 			let score = Number.POSITIVE_INFINITY;
-			if (shape.tool === "line") {
+			if (shape.clippedGeometry || shape.tool === "triangle" || shape.tool === "line" && shape.lineStyle && shape.lineStyle !== "solid") {
+				score = shapeIntersectsSegment(shape, start, end, threshold) ? 0 : Infinity;
+			} else if (shape.tool === "line") {
 				score = distanceBetweenSegments(start, end, shape.start, shape.end);
 			} else {
 				const bounds = getShapeBounds(shape);
@@ -11006,7 +11526,7 @@ class NativePdfAnnotatorSession {
 
 		for (let index = this.annotationDocument.strokes.length - 1; index >= 0; index -= 1) {
 			const stroke = this.annotationDocument.strokes[index];
-			if (stroke.page !== pageNumber || stroke.points.length === 0) {
+			if (stroke.page !== pageNumber || stroke.points.length === 0 || this.ocrHiddenStrokeIds?.has(stroke.id)) {
 				continue;
 			}
 			let score = Math.min(distanceToSegment(stroke.points[0], start, end), distanceToStroke(start, stroke), distanceToStroke(end, stroke));
@@ -11038,6 +11558,7 @@ class NativePdfAnnotatorSession {
 	}
 
 	private invalidateAnnotationPageCache(pageNumber?: number): void {
+		this.ocrHiddenStrokeIds?.clear();
 		if (pageNumber === undefined) this.svgRenderer?.invalidateMotionPreviews?.();
 		else { const root = this.pageSurfaces?.get(pageNumber)?.vectorEl; if (root) this.svgRenderer?.invalidateMotionPreviews?.(root); }
 		if (pageNumber === undefined) {
@@ -11084,6 +11605,13 @@ class NativePdfAnnotatorSession {
 				getBucket(image.page).imageItems.push(image);
 			}
 			this.annotationPageCache = cache;
+			if(this.annotationDocument.ocrGroups?.length){
+				this.ocrHiddenStrokeIds??=new Set();
+				for(const [page,bucket] of cache){
+					const hidden=getOcrPageView(this.annotationDocument,page,bucket.strokes).hiddenStrokeIds;
+					if(hidden.size){bucket.strokes=bucket.strokes.filter(stroke=>!hidden.has(stroke.id));for(const id of hidden)this.ocrHiddenStrokeIds.add(id);}
+				}
+			}
 		}
 		return this.annotationPageCache.get(pageNumber) ?? { strokes: [], eraserPaths: [], textItems: [], shapes: [], imageItems: [] };
 	}
@@ -11158,7 +11686,13 @@ class NativePdfAnnotatorSession {
 			this.scheduleSyncPages();
 			return;
 		}
+		this.syncSelectableText(surface);
 		if (this.drawSelectionPreview(surface)) { return; }
+		const frameKey=this.getPageFrameKey(surface);
+		if(surface.vectorEl && this.svgRenderer.hasCommittedFrame(surface.vectorEl) && this.publishedFrames.get(surface.overlayEl)===frameKey){
+			this.drawTransientPageAnnotations(pageNumber);
+			return;
+		}
 		const vectorContext = this.createSvgDrawingContext(surface);
 		const context = vectorContext ?? surface.overlayEl.getContext("2d");
 		if (!context) {
@@ -11201,6 +11735,7 @@ class NativePdfAnnotatorSession {
 			this.drawFocusedRegion(context, surface, this.focusedRegion);
 		}
 		if (vectorContext) { this.publishSvgDrawingContext(surface, vectorContext); }
+		this.publishedFrames.set(surface.overlayEl,frameKey);
 		this.clearTransientLayer(surface);
 		this.drawTransientPageAnnotations(pageNumber);
 	}
@@ -11380,25 +11915,9 @@ class NativePdfAnnotatorSession {
 	}
 
 	private scheduleMotionPreviewPreparation(): void {
-		if (!this.ownerWindow?.setTimeout) return;
-		if (typeof this.motionPreviewHandle === "number") this.ownerWindow.clearTimeout(this.motionPreviewHandle);
-		this.motionPreviewHandle = this.ownerWindow.setTimeout(() => {
-			this.motionPreviewHandle = null;
-			void this.prepareMotionPreviews().catch(() => { /* A preview failure keeps SVG. */ });
-		}, 1200);
-	}
-	private async prepareMotionPreviews(): Promise<void> {
-		if (this.savePromise || performance.now() - this.lastInkInputTimestamp < 1000) { this.scheduleMotionPreviewPreparation(); return; }
-		let prepared = 0;
-		for (const pageNumber of prioritizeRenderPages([...this.pageSurfaces.keys()], this.currentPage, null)) {
-			if (this.inlineTextEditorEl || this.hasActiveTransientRender() || this.isViewportMotionActive()) return;
-			const surface = this.pageSurfaces.get(pageNumber);
-			if (!surface?.vectorEl || !this.shouldKeepPageHot(pageNumber) || this.publishedFrames.get(surface.overlayEl) !== this.getPageFrameKey(surface)) continue;
-			const available = await this.svgRenderer.prepareMotionPreview(surface.vectorEl, () =>
-				this.pageSurfaces.get(pageNumber) === surface && !this.inlineTextEditorEl && !this.hasActiveTransientRender() && !this.isViewportMotionActive() &&
-				this.publishedFrames.get(surface.overlayEl) === this.getPageFrameKey(surface));
-			if (available && ++prepared >= 2) return;
-		}
+		// Keep precise SVG visible during scrolling; no bitmap substitution.
+		if (this.motionPreviewHandle !== null) this.ownerWindow.clearTimeout(this.motionPreviewHandle);
+		this.motionPreviewHandle = null;
 	}
 
 	private getLivePreviewPredictionStrength(): number {
@@ -11438,7 +11957,7 @@ class NativePdfAnnotatorSession {
 			}
 			if (!livePreview && !predictTail) {
 				const widthScale = this.resolveStoredScale(stroke.width, stroke.widthScale, MAX_STROKE_WIDTH_SCALE);
-				const signature = this.getStrokePathSignature(surface, stroke, Math.max(0.75, widthScale * surface.lastWidth), stroke.tool !== "highlighter") + `:${stroke.color}:${stroke.tool}`;
+				const signature = this.getStrokePathSignature(surface, stroke, Math.max(0.75, widthScale * surface.lastWidth), stroke.tool !== "highlighter") + `:${stroke.color}:${stroke.tool}:${stroke.opacity}`;
 				context.drawCachedStroke(stroke, signature, () => {
 					if (!context.reuseLiveContinuousStroke(stroke, Math.max(0.75, widthScale * surface.lastWidth))) this.paintStroke(context, surface, stroke, predictTail, livePreview, predictionStrength);
 				});
@@ -11468,7 +11987,7 @@ class NativePdfAnnotatorSession {
 		context.lineJoin = "round";
 		context.strokeStyle = stroke.color;
 		context.fillStyle = stroke.color;
-		context.globalAlpha = stroke.tool === "highlighter" ? 0.24 : 0.96;
+		context.globalAlpha = annotationOpacity(stroke);
 		context.globalCompositeOperation = "source-over";
 
 		if (stroke.tool === "highlighter") {
@@ -11854,42 +12373,8 @@ class NativePdfAnnotatorSession {
 	}
 
 	private drawShape(context: CanvasRenderingContext2D | SvgDrawingContext, surface: PageSurface, shape: ShapeAnnotation): void {
-		if (context instanceof SvgDrawingContext) { context.setKey(`shape:${shape.id}`); }
-		const startX = shape.start.x * surface.lastWidth;
-		const startY = shape.start.y * surface.lastHeight;
-		const endX = shape.end.x * surface.lastWidth;
-		const endY = shape.end.y * surface.lastHeight;
-		const width = endX - startX;
-		const height = endY - startY;
-
-		context.save();
-		context.strokeStyle = shape.color;
-		context.lineWidth = Math.max(1, this.resolveStoredScale(shape.width, shape.widthScale, MAX_STROKE_WIDTH_SCALE) * surface.lastWidth);
-		context.globalAlpha = 0.96;
-		context.lineCap = "round";
-		context.lineJoin = "round";
-
-		if (shape.tool === "line") {
-			context.beginPath();
-			context.moveTo(startX, startY);
-			context.lineTo(endX, endY);
-			context.stroke();
-			context.restore();
-			return;
-		}
-
-		if (shape.tool === "rectangle") {
-			context.strokeRect(startX, startY, width, height);
-			context.restore();
-			return;
-		}
-
-		const centerX = startX + width / 2;
-		const centerY = startY + height / 2;
-		context.beginPath();
-		context.ellipse(centerX, centerY, Math.abs(width) / 2, Math.abs(height) / 2, 0, 0, Math.PI * 2);
-		context.stroke();
-		context.restore();
+		if (context instanceof SvgDrawingContext) context.setKey(`shape:${shape.id}`);
+		renderShape(context, shape, surface.lastWidth, surface.lastHeight);
 	}
 
 	private drawSelection(context: CanvasRenderingContext2D | SvgDrawingContext, surface: PageSurface, targets: SelectedTarget[]): void {
@@ -12109,13 +12594,13 @@ class NativePdfAnnotatorSession {
 				continue;
 			}
 			const bounds = getShapeBounds(shape);
-			if (shape.tool !== "line" && pointInBounds(point, bounds)) {
+			if (shape.tool !== "line" && shape.tool !== "triangle" && pointInBounds(point, bounds)) {
 				candidates.push({ kind: "shape", id: shape.id, page: pageNumber, score: -0.02 });
 				continue;
 			}
 			if (pointInBounds(point, bounds, hitThreshold)) {
 				const score = distanceToShape(point, shape);
-				if (score <= hitThreshold * 1.5 || pointInBounds(point, bounds)) {
+				if (score <= hitThreshold * 1.5 || shape.tool !== "line" && shape.tool !== "triangle" && pointInBounds(point, bounds)) {
 					candidates.push({ kind: "shape", id: shape.id, page: pageNumber, score });
 				}
 			}
@@ -12205,9 +12690,11 @@ class NativePdfAnnotatorSession {
 			}
 			const boundedDeltaX = clamp(deltaX, -bounds.left, 1 - bounds.right);
 			const boundedDeltaY = clamp(deltaY, -bounds.top, 1 - bounds.bottom);
+			const ocrGroups = this.annotationDocument?.ocrGroups?.length ? collectOcrGroups(this.annotationDocument, new Set(pageTargets.filter(target => target.kind === "stroke").map(target => target.id))) : [];
 			for (const target of pageTargets) {
 				this.moveSelectedTarget(target, boundedDeltaX, boundedDeltaY);
 			}
+			if (ocrGroups.length && this.annotationDocument) transformOcrGroups(this.annotationDocument, ocrGroups, point => ({ x: point.x + boundedDeltaX, y: point.y + boundedDeltaY }));
 		}
 	}
 	private resizeSelectedTargets(targets: SelectedTarget[], handle: ResizeHandle, deltaX: number, deltaY: number): void {
@@ -12286,10 +12773,12 @@ class NativePdfAnnotatorSession {
 
 		const widthScale = (nextBounds.right - nextBounds.left) / Math.max(bounds.right - bounds.left, 0.0001);
 		const heightScale = (nextBounds.bottom - nextBounds.top) / Math.max(bounds.bottom - bounds.top, 0.0001);
+		const ocrGroups = this.annotationDocument.ocrGroups?.length ? collectOcrGroups(this.annotationDocument, new Set(targets.filter(target => target.kind === "stroke").map(target => target.id))) : [];
 
 		for (const target of targets) {
 			this.scaleTargetWithinBounds(target, bounds, nextBounds, widthScale, heightScale);
 		}
+		if (ocrGroups.length) transformOcrGroups(this.annotationDocument, ocrGroups, point => ({ x: nextBounds.left + (point.x - bounds.left) * widthScale, y: nextBounds.top + (point.y - bounds.top) * heightScale }));
 	}
 
 	private scaleTargetWithinBounds(
@@ -12537,6 +13026,10 @@ class NativePdfAnnotatorSession {
 	}
 
 	private doesPolygonIntersectShape(polygon: AnnotationPoint[], shape: ShapeAnnotation): boolean {
+		if (shape.clippedGeometry || shape.tool === "triangle" || shape.tool === "line" && shape.lineStyle && shape.lineStyle !== "solid") {
+			const geometry = shapeGeometry(shape);
+			return geometry.paths.some(path => this.doesPolygonIntersectPolyline(polygon, path.map(p => ({ ...p, pressure: .5 })))) || geometry.dots.some(p => this.isPointInsidePolygon({ ...p, pressure: .5 }, polygon));
+		}
 		if (shape.tool === "line") {
 			return this.doesPolygonIntersectPolyline(polygon, [shape.start, shape.end]);
 		}
@@ -12679,13 +13172,13 @@ class NativePdfAnnotatorSession {
 					continue;
 				}
 				const bounds = getShapeBounds(shape);
-				if (shape.tool !== "line" && pointInBounds(point, bounds)) {
+				if (shape.tool !== "line" && shape.tool !== "triangle" && pointInBounds(point, bounds)) {
 					candidates.push({ ...target, score: -0.02 });
 					continue;
 				}
 				if (pointInBounds(point, bounds, threshold)) {
 					const score = distanceToShape(point, shape);
-					if (score <= threshold * 1.5 || pointInBounds(point, bounds)) {
+					if (score <= threshold * 1.5 || shape.tool !== "line" && shape.tool !== "triangle" && pointInBounds(point, bounds)) {
 						candidates.push({ ...target, score });
 					}
 				}
@@ -12778,6 +13271,12 @@ class NativePdfAnnotatorSession {
 	}
 
 	private destroyPageSurfaces(): void {
+		if (this.pageResidencyEvictionHandle !== null) {
+			this.ownerWindow.clearTimeout(this.pageResidencyEvictionHandle);
+			this.pageResidencyEvictionHandle = null;
+		}
+		this.pageResidency.clear();
+		if (this.shapeGestureOptions) this.cancelActiveSessionInteraction();
 		this.finishFingerPan(false);
 		this.cancelFingerPanInertia();
 		this.unbindPdfPointerDocumentTracking();
@@ -12940,6 +13439,7 @@ export default class PDFAnnotatorPlugin extends Plugin {
 	private settingsController!: PDFAnnotatorSettingsController;
 	private sessions = new Map<WorkspaceLeaf, NativePdfAnnotatorSession>();
 	private clipboard: AnnotationClipboardPayload | null = null;
+	private clipboardRevision = 0;
 
 	async onload(): Promise<void> {
 		this.settingsController = new PDFAnnotatorSettingsController(
@@ -12953,6 +13453,7 @@ export default class PDFAnnotatorPlugin extends Plugin {
 			}
 		);
 		await this.settingsController.load();
+		this.migrateOcrCredential();
 		setInkRenderSettings(this.settingsController.getInkRenderSettings());
 		this.store = new AnnotationStore(this.app, this.settingsController.getLegacyInkRenderSettings());
 		this.annotatedEmbeds = new AnnotatedEmbedController(this.app, this.store, {
@@ -13081,6 +13582,12 @@ export default class PDFAnnotatorPlugin extends Plugin {
 				{ id: "copy-selection-annotated-embed", name: "Copy selected region annotated embed", run: (session) => session.copySelectionAnnotatedEmbedBlock() },
 				{ id: "diagnose-pdf-annotation-overlay", name: "Diagnose PDF annotation overlay", run: (session) => session.diagnoseOverlayState() }
 			]
+		);
+
+		registerSessionCommands<NativePdfAnnotatorSession>(
+			(command) => this.addCommand(command),
+			() => this.getSessionForLeaf(this.getActivePdfLeaf()),
+			toolCommandDefinitions<NativePdfAnnotatorSession>()
 		);
 
 		this.addCommand({
@@ -13274,6 +13781,59 @@ export default class PDFAnnotatorPlugin extends Plugin {
 		return this.settingsController.getInlineToolbarPreference();
 	}
 
+	getOcrSettings(): OcrSettings { return this.settingsController.getOcrSettings(); }
+	updateOcrSettings(settings: OcrSettings): void { this.settingsController.updateOcrSettings(settings); }
+	private ocrSecretId(): string { return `freedraw-pdf-ocr-${this.getOcrSettings().provider}`; }
+	private ocrCredentialTarget(): string {
+		return this.getOcrSettings().provider === "gemini" ? "https://generativelanguage.googleapis.com" : ocrEndpoint(this.getOcrSettings());
+	}
+	private migrateOcrCredential(): void {
+		const storage = this.app.secretStorage;
+		if (!storage) return;
+		for (const provider of ["gemini", "openai", "local"] as const) {
+			const id = `freedraw-pdf-ocr-${provider}`, saved = storage.getSecret(id);
+			if (!saved || saved.startsWith("{")) continue;
+			let target = provider === "gemini" ? "https://generativelanguage.googleapis.com" : provider === "openai" ? "https://api.openai.com/v1/chat/completions" : "unbound";
+			if (provider === this.getOcrSettings().provider) {
+				try { target = this.ocrCredentialTarget(); } catch { target = "unbound"; }
+			}
+			try { storage.setSecret(id, JSON.stringify({ format: "freedraw-ocr-credential-v1", target, value: saved })); }
+			catch { /* Leave the stored key untouched; the reader only permits safe legacy targets. */ }
+		}
+	}
+	getOcrCredential(): string {
+		const saved = this.app.secretStorage?.getSecret(this.ocrSecretId()) ?? "";
+		if (!saved) return "";
+		try {
+			const target = this.ocrCredentialTarget();
+			if (saved.startsWith("{")) {
+				const bound = JSON.parse(saved) as { format?: unknown; target?: unknown; value?: unknown };
+				return bound?.format === "freedraw-ocr-credential-v1" && bound.target === target && typeof bound.value === "string" ? bound.value : "";
+			}
+			// Dormant legacy keys can only be used at their fixed official service.
+			return this.getOcrSettings().provider === "gemini" || (this.getOcrSettings().provider === "openai" && target === "https://api.openai.com/v1/chat/completions") ? saved : "";
+		} catch { return ""; }
+	}
+	hasOcrCredential(): boolean { return Boolean(this.getOcrCredential()); }
+	setOcrCredential(value: string): void {
+		if(!this.app.secretStorage){new Notice("Obsidian secret storage is unavailable. Update Obsidian before configuring OCR credentials.");return;}
+		if (!value) { this.app.secretStorage.setSecret(this.ocrSecretId(), ""); return; }
+		let target: string;
+		try { target = this.ocrCredentialTarget(); }
+		catch { new Notice("Set a valid recognition endpoint before saving its API key."); return; }
+		this.app.secretStorage.setSecret(this.ocrSecretId(), JSON.stringify({ format: "freedraw-ocr-credential-v1", target, value }));
+	}
+
+	shouldSeparateToolOptions(): boolean {
+		return this.settingsController.shouldSeparateToolOptions();
+	}
+
+	getToolbarFixedWidth(): number { return this.settingsController.getToolbarFixedWidth(); }
+	getToolbarAlignment(): "left" | "right" { return this.settingsController.getToolbarAlignment(); }
+	getToolOptionsPresentation(): "menus" | "buttons" { return this.settingsController.getToolOptionsPresentation(); }
+	getDrawingModifier(): PDFAnnotatorSettings["drawingModifier"] { return this.settingsController.getDrawingModifier(); }
+	getRightTriangleModifier(): PDFAnnotatorSettings["rightTriangleModifier"] { return this.settingsController.getRightTriangleModifier(); }
+
 	getAutosaveDelayMs(): number {
 		return this.settingsController.getAutosaveDelayMs();
 	}
@@ -13363,16 +13923,21 @@ export default class PDFAnnotatorPlugin extends Plugin {
 			strokes: this.clipboard.strokes.map((stroke) => JSON.parse(JSON.stringify(stroke)) as StrokeAnnotation),
 			textItems: this.clipboard.textItems.map((item) => JSON.parse(JSON.stringify(item)) as TextAnnotation),
 			shapes: this.clipboard.shapes.map((shape) => JSON.parse(JSON.stringify(shape)) as ShapeAnnotation),
-			imageItems: (this.clipboard.imageItems ?? []).map((image) => JSON.parse(JSON.stringify(image)) as ImageAnnotation)
+			imageItems: (this.clipboard.imageItems ?? []).map((image) => JSON.parse(JSON.stringify(image)) as ImageAnnotation),
+			ocrGroups: JSON.parse(JSON.stringify(this.clipboard.ocrGroups ?? [])) as AnnotationClipboardPayload["ocrGroups"]
 		};
 	}
 
+	getClipboardRevision(): number { return this.clipboardRevision; }
+
 	setClipboard(payload: AnnotationClipboardPayload): void {
+		this.clipboardRevision++;
 		this.clipboard = {
 			strokes: payload.strokes.map((stroke) => JSON.parse(JSON.stringify(stroke)) as StrokeAnnotation),
 			textItems: payload.textItems.map((item) => JSON.parse(JSON.stringify(item)) as TextAnnotation),
 			shapes: payload.shapes.map((shape) => JSON.parse(JSON.stringify(shape)) as ShapeAnnotation),
-			imageItems: (payload.imageItems ?? []).map((image) => JSON.parse(JSON.stringify(image)) as ImageAnnotation)
+			imageItems: (payload.imageItems ?? []).map((image) => JSON.parse(JSON.stringify(image)) as ImageAnnotation),
+			ocrGroups: JSON.parse(JSON.stringify(payload.ocrGroups ?? [])) as AnnotationClipboardPayload["ocrGroups"]
 		};
 		for (const session of this.sessions.values()) {
 			if (session.isActive()) {
@@ -13426,11 +13991,16 @@ export default class PDFAnnotatorPlugin extends Plugin {
 		this.settingsController.updateToolPreferences(snapshot, presets);
 	}
 
+	updateShapeToolOptions(options: ShapeOptions): void {
+		this.updateToolPreferences({ ...this.getToolDefaults(), shapeOptions: options }, this.getStoredPresets());
+		for (const session of this.sessions.values()) session.applyShapeToolOptions(options);
+	}
+
 	updateTextColor(color: string): void {
 		this.settingsController.updateTextColor(color);
 	}
 
-	async updateBehaviorSettings(nextSettings: Partial<Pick<PDFAnnotatorSettings, "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "autoCopyRegionEmbed" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "quickAddPageSettings" | "autosaveDelayMs">>): Promise<void> {
+	async updateBehaviorSettings(nextSettings: Partial<Pick<PDFAnnotatorSettings, "preferInlineToolbar" | "separateToolOptions" | "toolbarFixedWidth" | "toolbarAlignment" | "toolOptionsPresentation" | "drawingModifier" | "rightTriangleModifier" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "autoCopyRegionEmbed" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "quickAddPageSettings" | "autosaveDelayMs">>): Promise<void> {
 		await this.settingsController.updateBehaviorSettings(nextSettings);
 	}
 
@@ -13548,3 +14118,7 @@ export default class PDFAnnotatorPlugin extends Plugin {
 		return !!(file && file.extension.toLowerCase() === "pdf");
 	}
 }
+
+
+
+

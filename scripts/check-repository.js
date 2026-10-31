@@ -16,7 +16,7 @@ const patterns = [
 const privatePath = /(?:^|\/)(?:\.analysis|\.agents|\.codex|\.obsidian|obsidian|test-vault|node_modules|backups|tmp|output|dist)(?:\/|$)|(?:^|\/)(?:context\.md|\.npmrc|\.env(?:\..*)?)$/i;
 const imageException = /^docs\/images\/freedraw-pdf-annotated-embed-demo\.png$/;
 const binaryOrPrivate = /\.(?:pdf|zip|png|jpe?g|gif|webp|bak|log|key|pem|p12|pfx|annot\.json)$/i;
-const files = [...new Set(git(staged ? ["ls-files", "--cached", "-z"] : ["ls-files", "--cached", "--others", "--exclude-standard", "-z"]).toString("utf8").split("\0").filter(Boolean))];
+const files = [...new Set(require("./repository-files")(root, staged))];
 let count = 0;
 for (const file of files) {
   if (!staged && !fs.existsSync(path.join(root, file))) continue;

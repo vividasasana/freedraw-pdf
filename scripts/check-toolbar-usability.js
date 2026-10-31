@@ -91,11 +91,15 @@ assertContains("main.ts", mainTs, "const pixelRadius = isTabletWebKitTouchDevice
 assertOccurrenceAtLeast("main.ts", mainTs, "rightGroup.className = \"pdf-native-annotator-group is-actions\";", 2, "read and annotation modes must keep document actions in the fixed rail");
 assertContains("main.ts", mainTs, "leftGroup.className = \"pdf-native-annotator-group is-tools\";", "toolbar drawing controls must use the scrollable rail");
 assertContains("main.ts", mainTs, "const previousToolScrollLeft =", "toolbar rebuilds must preserve the user's horizontal tool position");
-assertContains("main.ts", mainTs, "private restoreToolbarToolScroll(group: HTMLElement, scrollLeft: number): void", "toolbar scroll restoration must survive post-layout sizing");
+assertContains("main.ts", mainTs, "private restoreToolbarToolScroll(group: HTMLElement, scrollLeft: number, optionsGroup?: HTMLElement, optionsScrollLeft = 0): void", "both toolbar rails must restore scroll after layout");
 assertContains("main.ts", mainTs, "const shapeButton = this.createIconButton(", "tablet toolbars must consolidate low-frequency shape tools");
 assertContains("main.ts", mainTs, "private openShapeToolMenu(button: HTMLButtonElement): void", "shape control must expose all shape tools");
-assertContains("main.ts", mainTs, "checked: this.currentTool === shape.tool", "shape menu must identify the active shape");
-assertContains("main.ts", mainTs, "this.createIconButton(\"square\", \"Rectangle\"", "desktop toolbar may retain direct shape shortcuts while tablet uses one menu");
+assertContains("main.ts", mainTs, "createShapeOptionsPopover(this.ownerDocument, options", "shape control must open the options popover with the stored selection");
+const shapeOptionsTs = read("src/ui/shapeOptionsPopover.ts");
+assertContains("src/tools/toolState.ts", read("src/tools/toolState.ts"), "get shapeOptions(): ShapeOptions { return normalizeShapeToolOptions(this.state.shapeOptions); }", "Shapes must preserve both creation methods with hold as the default");
+assertNotContains("src/ui/shapeOptionsPopover.ts", shapeOptionsTs, ".addSlider(", "Shapes must not expose redundant opacity controls");
+assertNotContains("src/ui/shapeOptionsRows.ts", read("src/ui/shapeOptionsRows.ts"), 'name: "Appearance"', "Shapes must not duplicate the ink appearance controls");
+assertContains("main.ts", mainTs, "shapeButton.classList.add(\"pdf-native-annotator-shape-menu-button\")", "desktop and tablet must both expose Shape options");
 assertOccurrenceAtLeast("main.ts", mainTs, "const addPageButton = this.createPageMenuButton();", 2, "read and annotation modes must share the touch-safe Page control");
 assertContains("main.ts", mainTs, "private createPageMenuButton(): HTMLButtonElement", "Page control must centralize pointer and click activation");
 assertOccurrenceAtLeast("main.ts", mainTs, "this.openAddPageMenu(button);", 2, "Page control must open the focused page menu from pointer and click activation");
@@ -195,7 +199,8 @@ assertContains("main.ts", mainTs, "this.appendEraserSessionPoint(pageNumber, sam
 assertContains("main.ts", mainTs, "const changed = this.applyEraserSession(pageNumber);", "eraser pointer-up must apply annotation mutations once");
 assertContains("main.ts", mainTs, "private applyEraserSession(pageNumber: number): boolean", "eraser mutation must be batched outside pointermove");
 assertContains("main.ts", mainTs, "private applySegmentEraserSession(pageNumber: number, points: AnnotationPoint[], threshold: number): boolean", "segment erasing must batch one geometry mutation after input ends");
-assertContains("main.ts", mainTs, "return eraseStrokeSegmentsAlongPath(", "segment erasing must persist only stable survivor geometry");
+assertContains("main.ts", mainTs, "const strokesChanged = eraseStrokeSegmentsAlongPath(", "segment erasing must persist stable freehand survivor geometry");
+assertContains("main.ts", mainTs, "eraseShapeSegmentsAlongPath(this.annotationDocument", "segment erasing must preserve cuts in styled pen/highlighter lines and shapes");
 assertContains("src/annotation/eraser.ts", eraserTs, "function pathTouchesStroke(", "touch erasing must resolve contact against stored stroke geometry");
 assertContains("src/annotation/eraser.ts", eraserTs, "splitStrokeByEraserPath(", "touch erasing must create permanent survivor geometry without replaying masks");
 assertNotContains("main.ts", mainTs, "applyStrokeEraseMasks", "native redraws must never replay touch eraser paths");
@@ -269,7 +274,7 @@ assertNotContains("main.ts", mainTs, "NOTEBOOK_VIEW_TYPE", "standalone notebook 
 
 assertContains("styles.css", stylesCss, ".pdf-native-annotator-read-mode-hint", "read-mode hint must be styled");
 assertContains("package.json", JSON.stringify(packageJson.scripts), "check:toolbar", "package scripts must expose this verifier");
-assertContains("main.ts", mainTs, 'popover.setCssStyles({ maxHeight: "" });', "popover repositioning must remeasure unconstrained content after viewport changes");
+assertContains("main.ts", mainTs, 'maxHeight: `${Math.max(0, viewportHeight - 24)}px`', "popover repositioning must reset its size against the current viewport before measuring");
 assertNotContains("main.ts", mainTs, 'this.closeTransientPopovers("', "opening another instance of the same popover must close the previous instance");
 assertContains("main.ts", mainTs, "private beginExclusiveMenu(): void", "native menus and custom popovers must share one exclusive opening boundary");
 assertContains("main.ts", mainTs, "this.closeActiveNativeMenu();\n\t\tthis.closeTransientPopovers();", "opening any menu must close every previously open menu type");
@@ -279,9 +284,9 @@ assertContains("main.ts", mainTs, "private readonly transientPopovers: Transient
 assertContains("main.ts", mainTs, "this.transientPopovers.open(\"page-list\", popover", "the Pages popover must participate in the shared exclusive registry");
 assertNotContains("main.ts", mainTs, "transientPopoverBackdropEl", "the session must not retain a second backdrop lifecycle");
 assertNotContains("main.ts", mainTs, "handleTransientPopoverKeyDown", "the session must not retain a second Escape-listener lifecycle");
-assertContains("src/ui/transientPopoverRegistry.ts", transientPopoverRegistryTs, "createTransientPopoverEnvironment(ownerDocument: Document)", "popover lifecycle must capture the owning PDF document for popout compatibility");
+assertContains("src/ui/transientPopoverRegistry.ts", transientPopoverRegistryTs, "createTransientPopoverEnvironment(ownerDocument: Document,", "popover lifecycle must capture the owning PDF document for popout compatibility");
 assertContains("src/ui/transientPopoverRegistry.ts", transientPopoverRegistryTs, "this.closeAll();\n\t\tthis.ensureMounted();", "opening a custom popover must replace every existing custom popover");
-assertContains("main.ts", mainTs, "addMenuDescriptors(menu, shapeTools.map", "shape menu definitions must use the shared native menu adapter");
+assertContains("main.ts", mainTs, "this.transientPopovers.open(\"shape\", popover)", "Shape options must use the shared exclusive popover registry");
 assertContains("src/ui/menuDescriptors.ts", menuDescriptorsTs, "export function addMenuDescriptors", "native menus must share one descriptor renderer");
 
 if (builtMain) {

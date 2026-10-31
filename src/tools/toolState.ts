@@ -1,17 +1,22 @@
 import { DEFAULT_TOOL_PRESETS, DEFAULT_TOOL_STATE, clampToolWidth } from "../config";
+import { normalizeShapeToolOptions } from "../shapes/shapeOptions";
+import { normalizeInkToolOptions, normalizeInkToolOptionsByKind, inkToolShapeOptions } from "../shapes/inkToolOptions";
 import type {
 	AnnotationTool,
 	EraserMode,
 	PreviewStateSnapshot,
 	SelectionMode,
 	ShapeTool,
+	ShapeOptions,
+	InkToolKind,
+	InkToolOptions,
 	ToolPreset,
 	ToolPresetKind,
 	ToolStateSnapshot
 } from "../types";
 
 export function isShapeTool(tool: AnnotationTool): tool is ShapeTool {
-	return tool === "rectangle" || tool === "ellipse" || tool === "line";
+	return tool === "rectangle" || tool === "ellipse" || tool === "line" || tool === "triangle";
 }
 
 export class ToolStateController {
@@ -34,6 +39,8 @@ export class ToolStateController {
 				...(initialState?.widths ?? {})
 			}
 		};
+		this.state.shapeOptions = normalizeShapeToolOptions(initialState?.shapeOptions);
+		this.state.inkToolOptions = normalizeInkToolOptionsByKind(initialState?.inkToolOptions);
 		this.state.widths = {
 			pen: clampToolWidth("pen", this.state.widths.pen),
 			highlighter: clampToolWidth("highlighter", this.state.widths.highlighter),
@@ -90,6 +97,8 @@ export class ToolStateController {
 	get snapshot(): ToolStateSnapshot {
 		return {
 			...this.state,
+			shapeOptions: this.shapeOptions,
+			inkToolOptions: normalizeInkToolOptionsByKind(this.state.inkToolOptions),
 			selectedPresetIds: { ...(this.state.selectedPresetIds ?? {}) },
 			widths: { ...this.state.widths }
 		};
@@ -123,11 +132,21 @@ export class ToolStateController {
 	}
 
 	get activeColor(): string {
-		return this.state.activeColor;
+		return isShapeTool(this.activeTool) ? this.shapeOptions[this.shapeOptions.appearance].color : this.state.activeColor;
 	}
 
 	get activeOpacity(): number {
-		return this.state.activeOpacity;
+		return isShapeTool(this.activeTool) ? this.shapeOptions[this.shapeOptions.appearance].opacity : this.state.activeOpacity;
+	}
+
+	get shapeOptions(): ShapeOptions { return normalizeShapeToolOptions(this.state.shapeOptions); }
+	setShapeOptions(options: ShapeOptions): void { this.state.shapeOptions = normalizeShapeToolOptions(options); }
+	getInkToolOptions(kind: InkToolKind): InkToolOptions { return normalizeInkToolOptions(this.state.inkToolOptions?.[kind]); }
+	setInkToolOptions(kind: InkToolKind, options: InkToolOptions): void {
+		this.state.inkToolOptions = { ...normalizeInkToolOptionsByKind(this.state.inkToolOptions), [kind]: normalizeInkToolOptions(options) };
+	}
+	getInkShapeOptions(kind: InkToolKind, shiftOverride = false): ShapeOptions | null {
+		return inkToolShapeOptions(kind, this.getInkToolOptions(kind), { color: this.activeColor, width: this.getWidth(kind), opacity: this.activeOpacity }, shiftOverride);
 	}
 
 	get eraserMode(): EraserMode {
@@ -146,6 +165,7 @@ export class ToolStateController {
 	}
 
 	setActiveTool(tool: AnnotationTool): void {
+		if (isShapeTool(tool)) this.setShapeOptions(this.shapeOptions.method === "drag" ? { ...this.shapeOptions, shape: tool } : this.shapeOptions);
 		if (tool === "pen" || tool === "highlighter" || tool === "eraser") {
 			const presetId = this.state.selectedPresetIds?.[tool];
 			if (presetId && this.presets.has(presetId)) {
@@ -160,6 +180,7 @@ export class ToolStateController {
 	}
 
 	setColor(color: string): void {
+		if (isShapeTool(this.activeTool)) { const options = this.shapeOptions; options[options.appearance].color = color; this.setShapeOptions(options); return; }
 		this.state.activeColor = color;
 		this.syncSelectedPreset();
 	}
@@ -173,6 +194,7 @@ export class ToolStateController {
 	}
 
 	getWidth(tool = this.state.activeTool): number {
+		if (isShapeTool(tool)) { const options = this.shapeOptions; return options[options.appearance].width; }
 		if (tool === "highlighter") {
 			return this.state.widths.highlighter;
 		}
@@ -183,6 +205,7 @@ export class ToolStateController {
 	}
 
 	setWidth(width: number, tool = this.state.activeTool): void {
+		if (isShapeTool(tool)) { const options = this.shapeOptions; options[options.appearance].width = width; this.setShapeOptions(options); return; }
 		const targetTool = isShapeTool(tool) ? "pen" : tool;
 		if (targetTool === "highlighter") {
 			this.state.widths.highlighter = clampToolWidth("highlighter", width);

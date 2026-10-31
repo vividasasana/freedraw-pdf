@@ -2,15 +2,23 @@ export interface TransientPopoverEnvironment {
 	mountBackdrop(onDismiss: () => void): HTMLElement;
 	mountPopover(backdrop: HTMLElement, popover: HTMLElement): void;
 	listenForEscape(onDismiss: () => void): () => void;
+	observePopover?(popover: HTMLElement): () => void;
 }
 
 export interface TransientPopoverOptions {
 	onClose?: () => void;
 }
 
-export function createTransientPopoverEnvironment(ownerDocument: Document): TransientPopoverEnvironment {
+export function createTransientPopoverEnvironment(ownerDocument: Document, onResize?: () => void): TransientPopoverEnvironment {
 	const ownerWindow = ownerDocument.defaultView;
 	return {
+		observePopover: popover => {
+			const Observer = ownerWindow?.ResizeObserver;
+			if (!Observer || !onResize) return () => undefined;
+			const observer = new Observer(onResize);
+			observer.observe(popover);
+			return () => observer.disconnect();
+		},
 		mountBackdrop: (onDismiss) => {
 			const backdrop = ownerDocument.body.createDiv({
 				cls: "modal-container pdf-native-annotator-popover-backdrop"
@@ -48,6 +56,7 @@ export class TransientPopoverRegistry<TKey extends string> {
 	private active: { key: TKey; element: HTMLElement; onClose?: () => void } | null = null;
 	private backdrop: HTMLElement | null = null;
 	private stopListeningForEscape: (() => void) | null = null;
+	private stopObservingPopover: (() => void) | null = null;
 
 	constructor(private readonly environment: TransientPopoverEnvironment) {}
 
@@ -56,6 +65,7 @@ export class TransientPopoverRegistry<TKey extends string> {
 		this.ensureMounted();
 		this.active = { key, element, onClose: options.onClose };
 		this.environment.mountPopover(this.backdrop!, element);
+		this.stopObservingPopover = this.environment.observePopover?.(element) ?? null;
 	}
 
 	get(key: TKey): HTMLElement | null {
@@ -73,6 +83,8 @@ export class TransientPopoverRegistry<TKey extends string> {
 	}
 
 	closeAll(): void {
+		this.stopObservingPopover?.();
+		this.stopObservingPopover = null;
 		const closing = this.active;
 		this.active = null;
 		closing?.element.remove();

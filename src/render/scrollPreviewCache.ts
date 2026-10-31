@@ -15,6 +15,7 @@ interface Entry {
 	ready: boolean;
 	requested: boolean;
 	used: number;
+	previewOnly: boolean;
 }
 
 /** A small, disposable display cache. Annotation geometry remains in the SVG. */
@@ -40,7 +41,7 @@ export class ScrollPreviewCache {
 				x: 0, y: 0, width, height, preserveAspectRatio: "none", "aria-hidden": "true"
 			} });
 			root.insertBefore(image, body.nextSibling);
-			const entry: Entry = { body, image, snapshot, epoch, ready: false, requested: false, used: ++this.clock };
+			const entry: Entry = { body, image, snapshot, epoch, ready: false, requested: false, used: ++this.clock, previewOnly: false };
 			this.entries.set(root, entry);
 			snapshot = null; // The entry owns disposal from this point onward.
 			image.addEventListener("load", () => {
@@ -75,11 +76,21 @@ export class ScrollPreviewCache {
 	}
 
 	hideAll(): void { for (const entry of this.entries.values()) this.hide(entry); }
+	/** Keep a ready bounded picture while releasing all original annotation geometry. */
+	retainPreviewOnly(root: SVGSVGElement): boolean {
+		const entry = this.entries.get(root);
+		if (!entry?.ready) return false;
+		entry.previewOnly = true;
+		entry.body.replaceChildren();
+		for (const child of Array.from(root.children)) if (child !== entry.image) child.remove();
+		this.show(root);
+		return true;
+	}
 	invalidate(root: SVGSVGElement): void {
 		this.epochs.set(root, (this.epochs.get(root) ?? 0) + 1);
 		const entry = this.entries.get(root);
 		if (entry) {
-			this.hide(entry);
+			this.hide(entry, true);
 			entry.image.remove();
 			entry.snapshot.dispose();
 			this.entries.delete(root);
@@ -89,7 +100,10 @@ export class ScrollPreviewCache {
 		for (const root of [...this.entries.keys()]) this.invalidate(root);
 		if (this.pending) this.invalidate(this.pending);
 	}
-	private hide(entry: Entry): void {
+	private hide(entry: Entry, force = false): void {
+		// A cold page has no exact SVG behind its picture. Keep the picture until
+		// the replacement is committed; input/edits still invalidate it immediately.
+		if (entry.previewOnly && !force) return;
 		entry.requested = false;
 		entry.body.classList.remove("freedraw-pdf-scroll-preview-hidden");
 		entry.image.classList.remove("is-active");

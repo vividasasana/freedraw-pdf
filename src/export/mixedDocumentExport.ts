@@ -2,25 +2,22 @@ import { App, Notice, TFile } from "obsidian";
 import { renderAnnotationDocumentPage, renderAnnotationDocumentPageImages } from "../markdown/embedRender";
 import { getNotebookPageRenderDimensions, getNotebookPageSizeDimensions, hasEditableNativePageTemplates } from "../notebook/pageModel";
 import { drawTemplatePageBackground } from "../notebook/templateCanvas";
-import { loadNativePdfJs, type NativePdfDocument } from "../pdf/nativePdfJs";
 import { dataUrlToArrayBuffer, getBaseName } from "../utils/general";
-import { buildPdfFromJpegPages, type PdfImagePage } from "./simplePdfWriter";
+import { buildPdfWithOverlays, type PdfDisplayBox } from "./preservedPdfWriter";
 import type { AnnotationDocument, MixedPageEntry } from "../types";
+import { selectableTextRuns } from "../text/selectableRuns";
+import { selectableOcrTextRuns } from "../ocr/layout";
 
 const EXPORT_PAGE_WIDTH_PX = 1600;
-const EXPORT_JPEG_QUALITY = 0.92;
 
 export interface NativeMixedWorkingPdfResult {
 	file: TFile;
 	pageMap: Map<number, number>;
 }
 
-function uint8FromArrayBuffer(buffer: ArrayBuffer): Uint8Array {
-	return new Uint8Array(buffer);
-}
-
 async function createUniquePdfFile(app: App, sourceFile: TFile, bytes: Uint8Array, suffix: string): Promise<TFile> {
-	const folderPrefix = sourceFile.parent?.path ? `${sourceFile.parent.path}/` : "";
+	const folder=sourceFile.parent?.path?.replace(/^\/+|\/+$/g, "") ?? "";
+	const folderPrefix = folder ? `${folder}/` : "";
 	const baseName = `${getBaseName(sourceFile)} ${suffix}`;
 	let outputPath = `${folderPrefix}${baseName}.pdf`;
 	let counter = 2;
@@ -31,15 +28,6 @@ async function createUniquePdfFile(app: App, sourceFile: TFile, bytes: Uint8Arra
 	const buffer = new ArrayBuffer(bytes.byteLength);
 	new Uint8Array(buffer).set(bytes);
 	return app.vault.createBinary(outputPath, buffer);
-}
-
-function canvasToJpegPage(canvas: HTMLCanvasElement): PdfImagePage {
-	const jpegBytes = uint8FromArrayBuffer(dataUrlToArrayBuffer(canvas.toDataURL("image/jpeg", EXPORT_JPEG_QUALITY)));
-	return {
-		widthPx: canvas.width,
-		heightPx: canvas.height,
-		jpegBytes
-	};
 }
 
 async function renderSyntheticPageToCanvas(annotationDocument: AnnotationDocument, pageNumber: number, realPdfPageCount: number, includeAnnotations: boolean): Promise<HTMLCanvasElement> {
@@ -64,21 +52,18 @@ async function renderSyntheticPageToCanvas(annotationDocument: AnnotationDocumen
 	return canvas;
 }
 
-async function renderPdfPageToCanvas(pdfDocument: NativePdfDocument, annotationDocument: AnnotationDocument, pageNumber: number, realPdfPageCount: number, includeAnnotations: boolean): Promise<HTMLCanvasElement> {
-	const pdfPage = await pdfDocument.getPage(pageNumber);
-	const baseViewport = pdfPage.getViewport({ scale: 1 });
-	const scale = EXPORT_PAGE_WIDTH_PX / Math.max(baseViewport.width, 1);
-	const viewport = pdfPage.getViewport({ scale });
+async function renderPdfPageToCanvas(box: PdfDisplayBox, annotationDocument: AnnotationDocument, pageNumber: number, realPdfPageCount: number, includeAnnotations: boolean): Promise<HTMLCanvasElement> {
+	const sideways = box.rotation === 90 || box.rotation === 270;
+	const width = sideways ? box.height : box.width;
+	const height = sideways ? box.width : box.height;
 	const canvas = createEl("canvas");
-	canvas.width = Math.max(1, Math.round(viewport.width));
-	canvas.height = Math.max(1, Math.round(viewport.height));
+	canvas.width = EXPORT_PAGE_WIDTH_PX;
+	canvas.height = Math.max(1, Math.round(EXPORT_PAGE_WIDTH_PX * height / width));
 	const context = canvas.getContext("2d");
 	if (!context) {
 		throw new Error("Could not create export canvas.");
 	}
-	context.fillStyle = "#ffffff";
-	context.fillRect(0, 0, canvas.width, canvas.height);
-	await pdfPage.render({ canvasContext: context, viewport }).promise;
+	// Remain transparent: printed text and vector graphics stay in the source page.
 	const pageTemplate = hasEditableNativePageTemplates(annotationDocument, realPdfPageCount)
 		? annotationDocument.pdfPageTemplates?.find((template) => template.page === pageNumber)
 		: null;
@@ -111,46 +96,31 @@ async function renderMixedPagesToPdfBytes(
 	includeAnnotations: boolean
 ): Promise<{ pdfBytes: Uint8Array; pageMap: Map<number, number> }> {
 	const binary = await app.vault.adapter.readBinary(sourceFile.path);
-	const pdfjsLib = await loadNativePdfJs();
-	const loadingTask = pdfjsLib.getDocument({
-		data: new Uint8Array(binary),
-		disableWorker: true,
-		isEvalSupported: false,
-		useWorkerFetch: false
-	});
-
-	try {
-		const pdfDocument = await loadingTask.promise;
-		const pages: PdfImagePage[] = [];
-		const pageMap = new Map<number, number>();
-		for (const entry of mixedEntries) {
-			const canvas = entry.pageNumber <= pdfDocument.numPages
-				? await renderPdfPageToCanvas(pdfDocument, annotationDocument, entry.pageNumber, realPdfPageCount, includeAnnotations)
-				: await renderSyntheticPageToCanvas(annotationDocument, entry.pageNumber, realPdfPageCount, includeAnnotations);
-			const imagePage = canvasToJpegPage(canvas);
-			if (entry.pageNumber <= pdfDocument.numPages) {
-				const sourcePage = await pdfDocument.getPage(entry.pageNumber);
-				const physical = sourcePage.getViewport({ scale: 1 });
-				imagePage.widthPt = physical.width;
-				imagePage.heightPt = physical.height;
-			} else {
-				const pageSize = annotationDocument.appendedPages?.[entry.pageNumber - pdfDocument.numPages - 1]?.pageSize ?? "a4";
-				const dimensions = getNotebookPageSizeDimensions(pageSize);
-				imagePage.widthPt = pageSize === "letter" ? 612 : 595.276 * dimensions.width / 920;
-				imagePage.heightPt = pageSize === "letter" ? 792 : imagePage.widthPt * dimensions.height / dimensions.width;
-			}
-			pages.push(imagePage);
+	return buildPdfWithOverlays(new Uint8Array(binary), mixedEntries.map(entry => entry.pageNumber), async (pageNumber, box) => {
+		if (Boolean(box) !== (pageNumber <= realPdfPageCount)) throw new Error("The source PDF changed. Reopen it before exporting.");
+		const sideways = box?.rotation === 90 || box?.rotation === 270;
+		const pageSize = annotationDocument.appendedPages?.[pageNumber - realPdfPageCount - 1]?.pageSize ?? "a4";
+		const dimensions = getNotebookPageSizeDimensions(pageSize);
+		const widthPt = box ? (sideways ? box.height : box.width) : pageSize === "letter" ? 612 : 595.276 * dimensions.width / 920;
+		const heightPt = box ? (sideways ? box.width : box.height) : pageSize === "letter" ? 792 : widthPt * dimensions.height / dimensions.width;
+		const hasAnnotations = includeAnnotations && [annotationDocument.strokes, annotationDocument.textItems, annotationDocument.shapes, annotationDocument.imageItems ?? []]
+			.some(items => items.some(item => item.page === pageNumber));
+		const hasTemplate = box && hasEditableNativePageTemplates(annotationDocument, realPdfPageCount)
+			&& annotationDocument.pdfPageTemplates?.some(template => template.page === pageNumber);
+		if (box && !hasAnnotations && !hasTemplate) return { pngBytes: null, widthPt, heightPt };
+		const canvas = box
+			? await renderPdfPageToCanvas(box, annotationDocument, pageNumber, realPdfPageCount, includeAnnotations)
+			: await renderSyntheticPageToCanvas(annotationDocument, pageNumber, realPdfPageCount, includeAnnotations);
+		try {
+			const context=canvas.getContext("2d");
+			const items=includeAnnotations?annotationDocument.textItems.filter(item=>item.page===pageNumber):[];
+			const textRuns=context&&includeAnnotations?[...items.flatMap(item=>selectableTextRuns(context,item,canvas.width,canvas.height)),...selectableOcrTextRuns(context,annotationDocument,pageNumber,canvas.width,canvas.height)]:[];
+			return { pngBytes: new Uint8Array(dataUrlToArrayBuffer(canvas.toDataURL("image/png"))), widthPt, heightPt, textRuns };
+		} finally {
 			canvas.width = 0;
 			canvas.height = 0;
-			pageMap.set(entry.pageNumber, pages.length);
 		}
-		return {
-			pdfBytes: buildPdfFromJpegPages(pages),
-			pageMap
-		};
-	} finally {
-		await loadingTask.destroy();
-	}
+	});
 }
 
 export async function exportAnnotatedMixedDocumentPdf(

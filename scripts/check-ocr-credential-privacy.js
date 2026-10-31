@@ -1,0 +1,17 @@
+const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),ts=require('typescript'),assert=require('node:assert/strict'),{loadSource}=require('./load-source');
+const root=path.resolve(__dirname,'..'),src=fs.readFileSync(path.join(root,'main.ts'),'utf8'),tree=ts.createSourceFile('main.ts',src,ts.ScriptTarget.Latest,true),cls=tree.statements.find(n=>ts.isClassDeclaration(n)&&n.heritageClauses?.some(c=>c.types.some(t=>t.expression.getText(tree)==='Plugin')));
+const names=['ocrSecretId','ocrCredentialTarget','migrateOcrCredential','getOcrCredential','hasOcrCredential','setOcrCredential'],methods=cls.members.filter(n=>names.includes(n.name?.getText(tree))).map(n=>n.getText(tree)).join('\n');
+const notices=[],ctx={Notice:class{constructor(message){notices.push(message)}},ocrEndpoint:loadSource('src/ocr/providers.ts').ocrEndpoint};vm.runInNewContext(ts.transpileModule('class Host{'+methods+'}globalThis.Host=Host;',{compilerOptions:{target:ts.ScriptTarget.ES2020}}).outputText,ctx);
+const stored=new Map(),settings={provider:'openai',model:'fixture',endpoint:'https://api.openai.com/v1/chat/completions'},host=new ctx.Host();host.getOcrSettings=()=>settings;host.app={secretStorage:{getSecret:id=>stored.get(id),setSecret:(id,value)=>stored.set(id,value)}};
+host.setOcrCredential('fixture-only');assert.equal(host.getOcrCredential(),'fixture-only');
+settings.endpoint='https://different.example/ocr';assert.equal(host.getOcrCredential(),'','Changing endpoint must not silently reuse the previous service credential');
+settings.endpoint='https://api.openai.com/v1/chat/completions';assert.equal(host.getOcrCredential(),'fixture-only','Returning to original endpoint retains its credential');
+settings.provider='local';settings.endpoint='http://127.0.0.1:8767/ocr';host.setOcrCredential('local-fixture');settings.endpoint='http://192.0.2.1/ocr';assert.equal(host.getOcrCredential(),'','A local token must not follow a different server');
+settings.endpoint='file:///private';assert.equal(host.getOcrCredential(),'');host.setOcrCredential('unused-fixture');assert.ok(notices.length);
+settings.provider='gemini';settings.model='';settings.endpoint='';stored.set('freedraw-pdf-ocr-gemini','legacy-fixture');stored.set('freedraw-pdf-ocr-local','dormant-local-fixture');stored.set('freedraw-pdf-ocr-openai','dormant-online-fixture');host.migrateOcrCredential();assert.equal(host.getOcrCredential(),'legacy-fixture','Legacy configured credentials remain usable');
+settings.model='gemini-fixture';assert.equal(host.getOcrCredential(),'legacy-fixture','Choosing a Gemini model does not change its official service identity');
+host.setOcrCredential('');assert.equal(host.getOcrCredential(),'','Clear key removes the saved credential');
+stored.set('freedraw-pdf-ocr-gemini','{broken');assert.equal(host.getOcrCredential(),'','Malformed bound credentials fail closed');
+settings.provider='local';settings.endpoint='http://192.0.2.1/ocr';host.migrateOcrCredential();assert.equal(host.getOcrCredential(),'','A dormant legacy token must not bind to a newly chosen server after restart');
+settings.provider='openai';settings.endpoint='https://different.example/ocr';host.migrateOcrCredential();assert.equal(host.getOcrCredential(),'','Dormant legacy online keys are bound to the official service');
+console.log('OCR credential privacy passed: endpoint isolation, provider isolation, local token protection, invalid URL handling, legacy migration, model discovery and clear key.');

@@ -18,6 +18,7 @@ require.extensions[".ts"] = function transpileTypeScript(module, filename) {
 };
 
 const { registerSessionCommands } = require(path.join(projectRoot, "src", "commands", "sessionCommands.ts"));
+const { toolCommandDefinitions } = require(path.join(projectRoot, "src", "commands", "toolCommands.ts"));
 if (previousTypeScriptLoader) {
 	require.extensions[".ts"] = previousTypeScriptLoader;
 } else {
@@ -55,3 +56,19 @@ if (registered[1].checkCallback(false) !== true || runCount !== 2) {
 }
 
 console.log("Session command registry verifier passed.");
+const toolCommands=toolCommandDefinitions();
+if(new Set(toolCommands.map(command=>command.id)).size!==toolCommands.length) throw new Error("Duplicate tool command IDs");
+const calls=[];
+const toolSession=new Proxy({}, {get:(_target,key)=>(...args)=>calls.push([key,...args])});
+for(const command of toolCommands) {
+  const before=calls.length;command.run(toolSession);
+  if(calls.length!==before+1) throw new Error(`Tool command ${command.id} failed to dispatch exactly once`);
+}
+const invoke=id=>toolCommands.find(command=>command.id===id).run(toolSession);
+invoke("tool-highlighter-line-wavy");
+if(JSON.stringify(calls.at(-1))!==JSON.stringify(["setInkToolLineStyle","highlighter","wavy"]))throw new Error("Highlighter style command did not retain tool identity");
+invoke("shape-method-hold");
+if(JSON.stringify(calls.at(-1))!==JSON.stringify(["configureShapeTool",{method:"hold",shape:"auto"}]))throw new Error("Shapes must enable automatic hold recognition without resetting remembered drag styling");
+invoke("tool-highlighter-preset-3");
+if(JSON.stringify(calls.at(-1))!==JSON.stringify(["chooseToolPreset","highlighter",2]))throw new Error("Preset shortcut must select a stable slot");
+console.log(`Tool commands passed: ${toolCommands.length} unique assignable commands, distinct ink modes, nine preset slots and automatic Shapes.`);

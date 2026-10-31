@@ -2,6 +2,7 @@ const assert=require('node:assert/strict'),{loadSource}=require('./load-source')
 const {ScrollPreviewCache}=loadSource('src/render/scrollPreviewCache.ts');
 class Node{constructor(){this.localName="g";this.ownerDocument=doc;this.isConnected=true;this.children=[];this.listeners={};this.attrs={};this.classes=new Set();this.classList={add:x=>this.classes.add(x),remove:x=>this.classes.delete(x)};}createSvg(_tag,opts={}){const n=new Node();n.localName=_tag;n.attrs=opts.attr||{};this.children.push(n);n.parent=this;return n;}insertBefore(n,before){n.remove();const i=this.children.indexOf(before);this.children.splice(i<0?this.children.length:i,0,n);n.parent=this;}addEventListener(n,fn){this.listeners[n]=fn;}getAttribute(k){return this.attrs[k];}removeAttribute(k){delete this.attrs[k];}get firstChild(){return this.children[0]||null;}get firstElementChild(){return this.firstChild;}get childElementCount(){return this.children.length;}get nextSibling(){const a=this.parent?.children||[];return a[a.indexOf(this)+1]||null;}appendChild(n){n.remove();this.children.push(n);n.parent=this;}replaceChildren(){this.children=[];}getBoundingClientRect(){return{left:0,top:0,width:1000,height:1400};}setAttribute(k,v){this.attrs[k]=v;}remove(){this.removed=true;if(this.parent)this.parent.children=this.parent.children.filter(n=>n!==this);}emit(n){this.listeners[n]?.();}}
 const doc={defaultView:{createFragment:()=>new Node(),innerWidth:1000,innerHeight:1400}};
+Object.defineProperty(Node.prototype,'attributes',{get(){return Object.entries(this.attrs).map(([name,value])=>({name,value:String(value)}))}});
 async function run(){
  let disposed=0,built=0;const factory=async()=>{built++;return{href:'blob:preview',width:100,height:140,bytes:100,dispose(){disposed++;}}};
  const cache=new ScrollPreviewCache(factory,220,2),root=new Node(),body=new Node();
@@ -20,6 +21,11 @@ async function run(){
  let stillIdle=true,finish2;const race=new ScrollPreviewCache(()=>new Promise(resolve=>finish2=resolve));const raced=race.prepare(new Node(),new Node(),1,1,()=>stillIdle);stillIdle=false;finish2({href:'blob:race',width:1,height:1,bytes:4,dispose(){disposed++;}});assert.equal(await raced,false,'Input starting during conversion must reject the result');
  const {SvgAnnotationRenderer}=loadSource('src/render/svgDrawingContext.ts');
  const renderer=new SvgAnnotationRenderer();renderer.scrollPreviews=new ScrollPreviewCache(factory);
+ const denseRoot=new Node(),denseFrame=renderer.create(denseRoot,1000,1400);
+ denseFrame.records.push({key:'large-stroke',node:denseRoot.createSvg('path',{attr:{d:'M 0 0 '+'L 1 1 '.repeat(24000)}})});
+ renderer.publish(denseFrame);
+ assert.equal(await renderer.prepareMotionPreview(denseRoot,()=>true),true,'A few expensive long strokes must qualify for scrolling previews');
+ renderer.release(denseRoot);
  const r7=new Node();const frame=renderer.create(r7,1000,1400);
  for(let i=0;i<80;i++){frame.setKey('stroke:'+i);frame.beginPath();frame.moveTo(i,i);frame.lineTo(i+1,i+1);frame.stroke();}
  renderer.publish(frame);assert.equal(await renderer.prepareMotionPreview(r7,()=>true),true);
@@ -28,9 +34,22 @@ async function run(){
  renderer.promote(r7);assert.equal(renderer.showMotionPreview(r7),false,'Committing new ink must invalidate the old picture');
  await renderer.prepareMotionPreview(r7,()=>true);renderer.erase(r7,1000,1400,{x:.1,y:.1},{x:.2,y:.2},8);
  assert.equal(renderer.showMotionPreview(r7),false,'Erasing must invalidate the old picture');renderer.release(r7);
- const mainSource=require('node:fs').readFileSync(require('node:path').resolve(__dirname,'../main.ts'),'utf8');
+ const mainSource=require('node:fs').readFileSync(require('node:path').resolve(__dirname,'../main.ts'),'utf8').replace(/\r\n/g,'\n');
  assert.ok(mainSource.includes('this.svgRenderer?.hideMotionPreviews?.();\n\t\tconst isInkInput'),'Every admitted tool restores SVG before input');
- assert.ok(mainSource.includes('}, 1200);'),'Build previews after idle, never at scroll start');
- assert.ok(built>=4);console.log('Scroll preview cache passed: ready-before-hide, idle/input restoration, edit/load failures, stale async results, eviction and disposal.');
+ assert.ok(!mainSource.includes('this.svgRenderer.prepareMotionPreview('),'Do not rasterize page ink for scrolling');
+ assert.ok(!mainSource.includes('this.svgRenderer.showMotionPreview?.('),'Keep SVG visible during scrolling');
+ const r8=new Node(),f8=renderer.create(r8,1000,1400);
+ for(let i=0;i<80;i++){f8.setKey('s'+i);f8.beginPath();f8.moveTo(i,i);f8.lineTo(i+1,i+1);f8.stroke();}
+ renderer.publish(f8);await renderer.prepareMotionPreview(r8,()=>true);
+ const retainedImage=r8.children.find(n=>n.attrs.href),oldBody=r8.children[0];retainedImage.emit('load');
+ renderer.release(r8,true);
+ assert.equal(renderer.hasCommittedFrame(r8),false,'Keeping a preview must release the committed geometry/cache state');
+ assert.equal(oldBody.children.length,0,'Preview retention must not keep detached source strokes alive');
+ assert.equal(r8.children.length,1);assert.equal(r8.children[0],retainedImage);
+ renderer.hideMotionPreviews();assert.equal(retainedImage.classes.has('is-active'),true,'Keep the cold-page preview visible until precise SVG is committed');
+ const replacement=renderer.create(r8,1000,1400);replacement.setKey('new');replacement.beginPath();replacement.moveTo(1,1);replacement.lineTo(2,2);replacement.stroke();
+ renderer.publish(replacement);assert.equal(retainedImage.removed,true,'Precise publication must replace the old picture atomically');
+ assert.equal(renderer.hasCommittedFrame(r8),true);renderer.release(r8);
+ assert.ok(built>=4);console.log('Scroll preview cache passed: ready-before-hide, idle/input restoration, stale/failure disposal, bounded eviction, preview-only cold retention and exact-frame replacement.');
 }
 run().catch(e=>{console.error(e);process.exitCode=1});

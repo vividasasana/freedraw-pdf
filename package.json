@@ -45,6 +45,7 @@
     "typescript": "^6.0.2"
   },
   "dependencies": {
+    "pdf-lib": "1.17.1",
     "perfect-freehand": "^1.2.3"
   },
   "overrides": {

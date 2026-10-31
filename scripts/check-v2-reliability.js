@@ -91,6 +91,24 @@ async function main() {
  const {buildPdfFromJpegPages}=load('src/export/simplePdfWriter.ts');
  const bytes=buildPdfFromJpegPages([{widthPx:1600,heightPx:2071,widthPt:612,heightPt:792,jpegBytes:new Uint8Array([255,216,255,217])}]);
  assert.match(new TextDecoder().decode(bytes),/MediaBox \[0 0 612 792\]/,'Export must retain physical page dimensions');
+
+ // Exercise new editable shape fields through the real sidecar writer/reader.
+ const shapeStore=new AnnotationStore({vault:{adapter,getAbstractFileByPath:()=>undefined}});
+ disk.delete('a.pdf.annot.json');
+ const shapeDoc=(await shapeStore.loadWithInfo(a)).document;
+ const shapeBase={id:'pattern',page:1,tool:'line',color:'#ffcb47',width:14,widthScale:14/1524,appearance:'highlighter',opacity:.31,aspectRatio:1.414,start:{x:.1,y:.2,pressure:.5},end:{x:.8,y:.6,pressure:.5},createdAt:'2026-10-18',zIndex:1};
+ shapeDoc.shapes=['solid','dashed','dotted','wavy'].map((lineStyle,index)=>({...shapeBase,id:'pattern-'+index,lineStyle,waveSize:2.5,zIndex:index+1}));
+ shapeDoc.shapes.push({...shapeBase,id:'triangle',tool:'triangle',vertices:[{x:.2,y:0},{x:1,y:1},{x:0,y:.9}],zIndex:5});
+ await shapeStore.save(a,shapeDoc);
+ const reopened=(await shapeStore.loadWithInfo(a)).document;
+ assert.equal(JSON.stringify(reopened.shapes),JSON.stringify(shapeDoc.shapes),'Sidecar roundtrip changed shape geometry/style/opacity');
+ const {cloneAnnotationsForPage}=load('src/annotation/interaction.ts');
+ const copied=cloneAnnotationsForPage([],[],reopened.shapes,2).shapes;
+ assert.equal(copied.length,5);
+ copied.forEach((shape,index)=>{assert.equal(shape.page,2);assert.notEqual(shape.id,reopened.shapes[index].id);for(const field of ['vertices','lineStyle','waveSize','opacity','appearance','aspectRatio','widthScale'])assert.equal(JSON.stringify(shape[field]),JSON.stringify(reopened.shapes[index][field]),'Duplication lost '+field)});
+ reopened.shapes.push(...copied);await shapeStore.save(a,reopened);
+ assert.equal((await shapeStore.loadWithInfo(a)).document.shapes.length,10,'Duplicated shapes did not survive saving');
+ console.log('Shape sidecar persistence passed: five editable styles, opacity, triangle vertices, duplication, page identity and repeat save/reload.');
  console.log('V2 reliability passed: protected loads, recovery, conflicts, deferred saves/switches, physical page sizes.');
 }
 main().catch(e=>{console.error(e);process.exitCode=1});

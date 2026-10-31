@@ -28,6 +28,7 @@ class AnnotationScopeModal extends Modal {
 	}
 	onOpen():void {
 		this.setTitle("Choose annotation cleanup scope");
+		this.modalEl?.addClass("pdf-native-annotator-dialog");
 		let validate=()=>true;
 		new Setting(this.contentEl).setName("Include").addDropdown(dropdown=>dropdown
 			.addOption("pdf","One PDF").addOption("folder","A folder and its subfolders").addOption("vault","Whole vault")
@@ -87,6 +88,7 @@ class AnnotationReportModal extends Modal {
 	constructor(app: App, private readonly summary: string, private readonly rows: AnnotationFileResult[]) { super(app); }
 	onOpen(): void {
 		this.setTitle("Cleanup complete");
+		this.modalEl?.addClass("pdf-native-annotator-dialog");
 		this.contentEl.createEl("p", {text: this.summary});
 		const list = this.contentEl.createDiv({cls:"freedraw-pdf-file-report"});
 		for (const row of this.rows) new Setting(list).setName(row.path.slice(row.path.lastIndexOf("/") + 1)).setDesc(row.reason);
@@ -107,6 +109,7 @@ class AnnotationConfirmationModal extends Modal {
 		private readonly details: { label: string; value: string }[] = []) { super(app); }
 	onOpen(): void {
 		this.setTitle(this.title);
+		this.modalEl?.addClass("pdf-native-annotator-dialog");
 		this.contentEl.createEl("p", { text: this.message });
 		if (this.details.length) {
 			const list = this.contentEl.createEl("dl", { cls: "freedraw-pdf-file-details" });
@@ -139,6 +142,7 @@ class AnnotationFileChoiceModal extends Modal {
 	}
 	onOpen(): void {
 		this.setTitle(this.title);
+		this.modalEl?.addClass("pdf-native-annotator-dialog");
 		this.contentEl.createEl("p", { text: this.message });
 		new Setting(this.contentEl).setName("Annotation data JSON").addDropdown(dropdown => {
 			for (const path of this.paths) dropdown.addOption(path, path.slice(path.lastIndexOf("/") + 1));

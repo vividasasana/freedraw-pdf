@@ -1,8 +1,14 @@
+import { normalizeShapeToolOptions } from "../shapes/shapeOptions";
+import { normalizeInkToolOptionsByKind } from "../shapes/inkToolOptions";
+import { normalizeOcrSettings, type OcrSettings } from "../ocr/model";
 import { DEFAULT_SETTINGS, clampToolWidth, normalizeToolPresets } from "../config";
 import type { InkEasingMode, InkInputPolicy, InkPressureMode, InkRenderSettings, LivePreviewMode, PDFAnnotatorSettings, ToolPreset, ToolStateSnapshot } from "../types";
 
-type BehaviorSettingKeys = "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "autoCopyRegionEmbed" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "quickAddPageSettings" | "autosaveDelayMs";
+type BehaviorSettingKeys = "preferInlineToolbar" | "separateToolOptions" | "toolbarFixedWidth" | "toolbarAlignment" | "toolOptionsPresentation" | "drawingModifier" | "rightTriangleModifier" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "autoCopyRegionEmbed" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "quickAddPageSettings" | "autosaveDelayMs";
 
+function normalizeToolbarWidth(value: unknown): number { return typeof value === "number" && Number.isFinite(value) ? Math.max(320, Math.min(1200, Math.round(value / 20) * 20)) : DEFAULT_SETTINGS.toolbarFixedWidth; }
+
+function normalizeDrawingModifier(value: unknown, fallback: PDFAnnotatorSettings["drawingModifier"]): PDFAnnotatorSettings["drawingModifier"] { return value === "shift" || value === "alt" || value === "control" || value === "meta" || value === "none" ? value : fallback; }
 function normalizeInkInputPolicy(value: unknown): InkInputPolicy {
 	if (value === "pen-mouse-stylus-touch") {
 		return "allow-touch";
@@ -108,11 +114,14 @@ export class PDFAnnotatorSettingsController {
 			inkRenderSettings.pressureMode = "auto";
 		}
 		this.settings = {
+			ocrSettings: normalizeOcrSettings(loaded?.ocrSettings),
 			quickAddPageSettings: normalizeQuickAddPageSettings(loaded?.quickAddPageSettings),
 			pressureCaptureVersion: 1,
 			toolDefaults: {
 				...DEFAULT_SETTINGS.toolDefaults,
 				...toolDefaults,
+				shapeOptions: normalizeShapeToolOptions(toolDefaults.shapeOptions),
+				inkToolOptions: normalizeInkToolOptionsByKind(toolDefaults.inkToolOptions),
 				selectedPresetIds: {
 					...(DEFAULT_SETTINGS.toolDefaults.selectedPresetIds ?? {}),
 					...(toolDefaults.selectedPresetIds ?? {})
@@ -126,6 +135,12 @@ export class PDFAnnotatorSettingsController {
 			presets: normalizedPresets,
 			textColor: normalizeColor(loaded?.textColor, DEFAULT_SETTINGS.textColor),
 			preferInlineToolbar: typeof loaded?.preferInlineToolbar === "boolean" ? loaded.preferInlineToolbar : DEFAULT_SETTINGS.preferInlineToolbar,
+			separateToolOptions: typeof loaded?.separateToolOptions === "boolean" ? loaded.separateToolOptions : DEFAULT_SETTINGS.separateToolOptions,
+			toolbarFixedWidth: normalizeToolbarWidth(loaded?.toolbarFixedWidth),
+			toolbarAlignment: loaded?.toolbarAlignment === "right" ? "right" : "left",
+			toolOptionsPresentation: loaded?.toolOptionsPresentation === "menus" ? "menus" : "buttons",
+			drawingModifier: normalizeDrawingModifier(loaded?.drawingModifier, "shift"),
+			rightTriangleModifier: normalizeDrawingModifier(loaded?.rightTriangleModifier, "alt"),
 			showRegionToolbarButton: typeof loaded?.showRegionToolbarButton === "boolean" ? loaded.showRegionToolbarButton : DEFAULT_SETTINGS.showRegionToolbarButton,
 			showCopyEmbedToolbarButton: typeof loaded?.showCopyEmbedToolbarButton === "boolean" ? loaded.showCopyEmbedToolbarButton : DEFAULT_SETTINGS.showCopyEmbedToolbarButton,
 			autoCopyRegionEmbed: typeof loaded?.autoCopyRegionEmbed === "boolean" ? loaded.autoCopyRegionEmbed : DEFAULT_SETTINGS.autoCopyRegionEmbed,
@@ -153,6 +168,8 @@ export class PDFAnnotatorSettingsController {
 	getToolDefaults(): ToolStateSnapshot {
 		return {
 			...this.settings.toolDefaults,
+			shapeOptions: normalizeShapeToolOptions(this.settings.toolDefaults.shapeOptions),
+			inkToolOptions: normalizeInkToolOptionsByKind(this.settings.toolDefaults.inkToolOptions),
 			selectedPresetIds: { ...(this.settings.toolDefaults.selectedPresetIds ?? {}) },
 			widths: { ...this.settings.toolDefaults.widths }
 		};
@@ -175,9 +192,26 @@ export class PDFAnnotatorSettingsController {
 		return this.settings.autosaveDelayMs;
 	}
 
+	getOcrSettings(): OcrSettings { return { ...this.settings.ocrSettings }; }
+	updateOcrSettings(value: OcrSettings): void {
+		this.settings.ocrSettings = normalizeOcrSettings(value);
+		this.scheduleSave();
+		this.onBehaviorChanged();
+	}
+
 	shouldShowRegionToolbarButton(): boolean {
 		return this.settings.showRegionToolbarButton;
 	}
+
+	shouldSeparateToolOptions(): boolean {
+		return this.settings.separateToolOptions;
+	}
+
+	getToolbarFixedWidth(): number { return this.settings.toolbarFixedWidth; }
+	getToolbarAlignment(): "left" | "right" { return this.settings.toolbarAlignment; }
+	getToolOptionsPresentation(): "menus" | "buttons" { return this.settings.toolOptionsPresentation; }
+	getDrawingModifier(): PDFAnnotatorSettings["drawingModifier"] { return this.settings.drawingModifier; }
+	getRightTriangleModifier(): PDFAnnotatorSettings["rightTriangleModifier"] { return this.settings.rightTriangleModifier; }
 
 	shouldShowCopyEmbedToolbarButton(): boolean {
 		return this.settings.showCopyEmbedToolbarButton;
@@ -222,6 +256,8 @@ export class PDFAnnotatorSettingsController {
 	updateToolPreferences(snapshot: ToolStateSnapshot, presets: ToolPreset[]): void {
 		this.settings.toolDefaults = {
 			...snapshot,
+			shapeOptions: normalizeShapeToolOptions(snapshot.shapeOptions),
+			inkToolOptions: normalizeInkToolOptionsByKind(snapshot.inkToolOptions),
 			selectedPresetIds: { ...(snapshot.selectedPresetIds ?? {}) },
 			widths: {
 				pen: clampToolWidth("pen", snapshot.widths.pen),
@@ -248,12 +284,18 @@ export class PDFAnnotatorSettingsController {
 			this.settings.inkRenderSettings.thinning = Math.abs(this.settings.inkRenderSettings.thinning);
 		}
 		if (nextSettings.quickAddPageSettings) this.settings.quickAddPageSettings = normalizeQuickAddPageSettings(nextSettings.quickAddPageSettings);
+		this.settings.toolbarFixedWidth = normalizeToolbarWidth(this.settings.toolbarFixedWidth);
+		this.settings.toolbarAlignment = this.settings.toolbarAlignment === "right" ? "right" : "left";
+		this.settings.toolOptionsPresentation = this.settings.toolOptionsPresentation === "menus" ? "menus" : "buttons";
+		this.settings.drawingModifier = normalizeDrawingModifier(this.settings.drawingModifier, "shift");
+		this.settings.rightTriangleModifier = normalizeDrawingModifier(this.settings.rightTriangleModifier, "alt");
 		this.scheduleSave();
 		this.onBehaviorChanged();
 	}
 
 	private createDefaultSettings(): PDFAnnotatorSettings {
 		return {
+			ocrSettings: { ...DEFAULT_SETTINGS.ocrSettings },
 			quickAddPageSettings: { ...DEFAULT_SETTINGS.quickAddPageSettings },
 			pressureCaptureVersion: DEFAULT_SETTINGS.pressureCaptureVersion,
 			toolDefaults: {
@@ -264,6 +306,12 @@ export class PDFAnnotatorSettingsController {
 			presets: DEFAULT_SETTINGS.presets.map((preset) => ({ ...preset })),
 			textColor: DEFAULT_SETTINGS.textColor,
 			preferInlineToolbar: DEFAULT_SETTINGS.preferInlineToolbar,
+			separateToolOptions: DEFAULT_SETTINGS.separateToolOptions,
+			toolbarFixedWidth: DEFAULT_SETTINGS.toolbarFixedWidth,
+			toolbarAlignment: DEFAULT_SETTINGS.toolbarAlignment,
+			toolOptionsPresentation: DEFAULT_SETTINGS.toolOptionsPresentation,
+			drawingModifier: DEFAULT_SETTINGS.drawingModifier,
+			rightTriangleModifier: DEFAULT_SETTINGS.rightTriangleModifier,
 			showRegionToolbarButton: DEFAULT_SETTINGS.showRegionToolbarButton,
 			showCopyEmbedToolbarButton: DEFAULT_SETTINGS.showCopyEmbedToolbarButton,
 			autoCopyRegionEmbed: DEFAULT_SETTINGS.autoCopyRegionEmbed,
@@ -287,3 +335,7 @@ export class PDFAnnotatorSettingsController {
 		}, 150);
 	}
 }
+
+
+
+

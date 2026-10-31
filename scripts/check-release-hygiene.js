@@ -1,6 +1,5 @@
 const fs = require("fs");
 const path = require("path");
-const { execFileSync } = require("child_process");
 
 const projectRoot = path.resolve(__dirname, "..");
 const releaseFiles = ["main.js", "manifest.json", "styles.css"];
@@ -56,12 +55,7 @@ function normalizeRelativePath(filePath) {
 }
 
 function getCandidateFiles() {
-	const output = execFileSync(
-		"git",
-		["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-		{ cwd: projectRoot, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }
-	);
-	return output.split("\0").filter(Boolean).map(normalizeRelativePath);
+	return require("./repository-files")(projectRoot).map(normalizeRelativePath);
 }
 
 function getSensitiveCategory(content) {

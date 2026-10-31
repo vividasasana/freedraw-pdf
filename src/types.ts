@@ -1,7 +1,32 @@
 import type { TFile, WorkspaceLeaf } from "obsidian";
 import type { RenderableAnnotation as OrderedRenderableAnnotation } from "./annotation/renderOrder";
+import type { OcrGroup, OcrSettings } from "./ocr/model";
 
-export type ShapeTool = "rectangle" | "ellipse" | "line";
+export type ShapeTool = "rectangle" | "ellipse" | "line" | "triangle";
+export type ShapeChoice = ShapeTool | "auto";
+export type DrawingModifier = "shift" | "alt" | "control" | "meta" | "none";
+export type ShapeLineStyle = "solid" | "dashed" | "dotted" | "wavy";
+export interface ShapeInkStyle { color: string; width: number; opacity: number; }
+export interface ShapeOptions {
+	method: "drag" | "hold";
+	shape: ShapeChoice;
+	/** Remember the chosen drag shape while draw-and-hold uses automatic fitting. */
+	dragShape?: ShapeTool;
+	appearance: "pen" | "highlighter";
+	lineStyle: ShapeLineStyle;
+	/** Wave amplitude as a multiple of the stored stroke width. */
+	waveSize: number;
+	pen: ShapeInkStyle;
+	highlighter: ShapeInkStyle;
+}
+export type InkToolKind = "pen" | "highlighter";
+export type InkDrawingMode = "freehand" | "straight" | "hold";
+export interface InkToolOptions {
+	mode: InkDrawingMode;
+	holdShape: ShapeChoice;
+	lineStyle: ShapeLineStyle;
+	waveSize: number;
+}
 export type AnnotationTool = "select" | "region" | "pen" | "highlighter" | "eraser" | "text" | ShapeTool;
 export type EraserMode = "object" | "segment";
 export type SelectionMode = "single" | "box" | "lasso";
@@ -49,6 +74,9 @@ export interface ToolPreset {
 }
 
 export interface ToolStateSnapshot {
+	shapeOptions?: ShapeOptions;
+	/** Separate drawing behaviours; missing fields keep ordinary freehand input. */
+	inkToolOptions?: Partial<Record<InkToolKind, InkToolOptions>>;
 	activeTool: AnnotationTool;
 	activeColor: string;
 	activeOpacity: number;
@@ -72,12 +100,19 @@ export interface PreviewStateSnapshot {
 }
 
 export interface PDFAnnotatorSettings {
+	ocrSettings: OcrSettings;
 	quickAddPageSettings: QuickAddPageSettings;
 	pressureCaptureVersion: number;
 	toolDefaults: ToolStateSnapshot;
 	presets: ToolPreset[];
 	textColor: string;
 	preferInlineToolbar: boolean;
+	separateToolOptions: boolean;
+	toolbarFixedWidth: number;
+	toolbarAlignment: "left" | "right";
+	toolOptionsPresentation: "menus" | "buttons";
+	drawingModifier: DrawingModifier;
+	rightTriangleModifier: DrawingModifier;
 	showRegionToolbarButton: boolean;
 	showCopyEmbedToolbarButton: boolean;
 	autoCopyRegionEmbed: boolean;
@@ -99,6 +134,8 @@ export interface AnnotationPoint {
 }
 
 export interface StrokeAnnotation {
+	/** Optional for assisted freehand; absent preserves legacy ink opacity. */
+	opacity?: number;
 	inkSettings?: InkRenderSettings;
 	id: string;
 	page: number;
@@ -147,6 +184,16 @@ export interface TextAnnotation {
 }
 
 export interface ShapeAnnotation {
+	/** Remaining centreline paths/dots after touch erase, relative to the shape's box. */
+	clippedGeometry?: { paths: Array<Array<{ x: number; y: number }>>; dots: Array<{ x: number; y: number }> };
+	appearance?: "pen" | "highlighter";
+	opacity?: number;
+	lineStyle?: ShapeLineStyle;
+	waveSize?: number;
+	/** Page height / width at creation, for stable document-unit patterns. */
+	aspectRatio?: number;
+	/** Triangle vertices relative to the start/end box; moving/resizing keeps them editable. */
+	vertices?: Array<{ x: number; y: number }>;
 	id: string;
 	page: number;
 	tool: ShapeTool;
@@ -173,6 +220,7 @@ export interface ImageAnnotation {
 }
 
 export interface AnnotationClipboardPayload {
+	ocrGroups?: OcrGroup[];
 	strokes: StrokeAnnotation[];
 	textItems: TextAnnotation[];
 	shapes: ShapeAnnotation[];
@@ -235,6 +283,7 @@ export interface RemovedNotebookPage {
 		textItems: TextAnnotation[];
 		shapes: ShapeAnnotation[];
 		imageItems: ImageAnnotation[];
+		ocrGroups?: OcrGroup[];
 	};
 }
 
@@ -286,6 +335,7 @@ export interface RegionReference {
 }
 
 export interface AnnotationDocument {
+	ocrGroups?: OcrGroup[];
 	version: number;
 	sourceFile: string;
 	sourcePdf?: {

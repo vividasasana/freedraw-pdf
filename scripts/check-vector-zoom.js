@@ -3,7 +3,7 @@ const assert = require("node:assert/strict"), ts = require("typescript");
 const source = fs.readFileSync(path.join(__dirname, "..", "main.ts"), "utf8");
 const tree = ts.createSourceFile("main.ts", source, ts.ScriptTarget.Latest, true);
 const sessionClass = tree.statements.find(n => ts.isClassDeclaration(n) && n.name?.text === "NativePdfAnnotatorSession");
-const names = ["invalidateAnnotationPageCache", "getPageFrameKey", "getStableSurfaceSize", "previewResizeOverlay", "startPageRenderJob", "drawImageAnnotation"];
+const names = ["drawPageAnnotations", "invalidateAnnotationPageCache", "getPageFrameKey", "getStableSurfaceSize", "previewResizeOverlay", "startPageRenderJob", "drawImageAnnotation"];
 const methods = sessionClass.members.filter(n => names.includes(n.name?.getText(tree))).map(n => n.getText(tree)).join("\n");
 let loadedImage;
 const context = { Image: class { constructor() { loadedImage = this; } }, SvgDrawingContext: class {}, isEmbeddedImageDataUrl: () => true };
@@ -22,6 +22,7 @@ Object.assign(session, { documentRevision: 1, ownerWindow: { devicePixelRatio: 2
  pageSurfaces: new Map([[1, surface]]), publishedFrames: new WeakMap(), pendingRedrawPages: new Set(),
  svgRenderer: { hasCommittedFrame: () => true }, isViewportMotionActive: () => false, hasActiveTransientRender: () => false,
  ensureOverlayLayerOrder() {}, resizeOverlay() {}, resizeInlineTextEditorForSurface() {},
+	syncSelectableText() {},
  cancelPageRenderJob() { cancellations++; }, createSvgDrawingContext() { builds++; return null; }, getNextPageRenderSlot: () => null });
 const stable = session.getStableSurfaceSize(surface);
 assert.equal(stable.width, 1000, "Pinch transforms must not be counted as layout width");
@@ -36,6 +37,9 @@ for (let i = 0; i < 21; i++) {
 }
 assert.equal(builds, 0, "Zooming an unchanged 10,000-stroke vector page must not rebuild its geometry");
 assert.equal(cancellations, 21, "Obsolete queued jobs must be cancelled when retaining a current SVG frame");
+session.isFingerPanRenderingPaused=()=>false;session.drawSelectionPreview=()=>false;session.drawTransientPageAnnotations=()=>{};
+for(let i=0;i<20;i++)session.drawPageAnnotations(1);
+assert.equal(builds,0,'Synchronous redraws must retain the same valid SVG frame as queued redraws');
 session.invalidateAnnotationPageCache();
 session.documentRevision++;
 session.startPageRenderJob(1);

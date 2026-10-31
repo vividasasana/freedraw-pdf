@@ -1,3 +1,7 @@
+import { renderShape } from "../shapes/shapeGeometry";
+import { annotationOpacity } from "../shapes/shapeOptions";
+import { getOcrPageView } from "../ocr/model";
+import { renderOcrText } from "../ocr/layout";
 import { drawSmoothInkStroke } from "../ink/inkEngine";
 import { getAnnotationRenderables } from "../annotation/renderOrder";
 import type { AnnotationDocument, ImageAnnotation, NormalizedRect, ShapeAnnotation, StrokeAnnotation, TextAnnotation } from "../types";
@@ -114,7 +118,8 @@ export function renderAnnotationDocumentPage(
 	if (!annotationContext) {
 		return;
 	}
-	const strokes = document.strokes.filter((stroke) => stroke.page === pageNumber);
+	const hiddenStrokeIds = getOcrPageView(document,pageNumber).hiddenStrokeIds;
+	const strokes = document.strokes.filter((stroke) => stroke.page === pageNumber && !hiddenStrokeIds.has(stroke.id));
 	const textItems = document.textItems.filter((item) => item.page === pageNumber);
 	const shapes = document.shapes.filter((shape) => shape.page === pageNumber);
 	const renderables = getAnnotationRenderables(strokes, textItems, shapes);
@@ -127,6 +132,7 @@ export function renderAnnotationDocumentPage(
 			renderEmbedShape(annotationContext, renderable.annotation, width, height);
 		}
 	}
+	renderOcrText(annotationContext,document,pageNumber,width,height);
 	context.drawImage(annotationCanvas, 0, 0);
 }
 
@@ -162,13 +168,13 @@ function loadImageAnnotation(imageItem: ImageAnnotation): Promise<HTMLImageEleme
 	});
 }
 
-function renderEmbedStroke(context: CanvasRenderingContext2D, stroke: StrokeAnnotation, width: number, height: number): void {
+export function renderEmbedStroke(context: CanvasRenderingContext2D, stroke: StrokeAnnotation, width: number, height: number): void {
 	if (stroke.points.length === 0) {
 		return;
 	}
 	const baseWidth = stroke.widthScale ? Math.max(1, stroke.widthScale * width) : stroke.width;
 	context.save();
-	context.globalAlpha = stroke.tool === "highlighter" ? 0.24 : 0.96;
+	context.globalAlpha = annotationOpacity(stroke);
 	context.fillStyle = stroke.color;
 	context.strokeStyle = stroke.color;
 	context.lineCap = "round";
@@ -224,31 +230,6 @@ function renderEmbedText(context: CanvasRenderingContext2D, textItem: TextAnnota
 }
 
 function renderEmbedShape(context: CanvasRenderingContext2D, shape: ShapeAnnotation, width: number, height: number): void {
-	const startX = shape.start.x * width;
-	const startY = shape.start.y * height;
-	const endX = shape.end.x * width;
-	const endY = shape.end.y * height;
-	context.save();
-	context.strokeStyle = shape.color;
-	context.lineWidth = shape.widthScale ? Math.max(1, shape.widthScale * width) : shape.width;
-	context.globalAlpha = 0.96;
-	context.lineCap = "round";
-	context.lineJoin = "round";
-	if (shape.tool === "line") {
-		context.beginPath();
-		context.moveTo(startX, startY);
-		context.lineTo(endX, endY);
-		context.stroke();
-		context.restore();
-		return;
-	}
-	if (shape.tool === "rectangle") {
-		context.strokeRect(startX, startY, endX - startX, endY - startY);
-		context.restore();
-		return;
-	}
-	context.beginPath();
-	context.ellipse((startX + endX) / 2, (startY + endY) / 2, Math.abs(endX - startX) / 2, Math.abs(endY - startY) / 2, 0, 0, Math.PI * 2);
-	context.stroke();
-	context.restore();
+	renderShape(context, shape, width, height);
 }
+

@@ -92,6 +92,7 @@ export const DEFAULT_TOOL_STATE: ToolStateSnapshot = {
 };
 
 export const DEFAULT_SETTINGS: PDFAnnotatorSettings = {
+	ocrSettings: { provider: "gemini", model: "", endpoint: "", language: "English", showToolbarButton: true },
 	quickAddPageSettings: { source: "previous", template: "ruled", paperColor: "#fffdf7" },
 	pressureCaptureVersion: 1,
 	toolDefaults: {
@@ -102,6 +103,12 @@ export const DEFAULT_SETTINGS: PDFAnnotatorSettings = {
 	presets: DEFAULT_TOOL_PRESETS.map((preset) => ({ ...preset })),
 	textColor: TEXT_COLOR_PRESETS[0].color,
 	preferInlineToolbar: true,
+	separateToolOptions: true,
+	toolbarFixedWidth: 640,
+	toolbarAlignment: "left",
+	toolOptionsPresentation: "buttons",
+	drawingModifier: "shift",
+	rightTriangleModifier: "alt",
 	showRegionToolbarButton: false,
 	showCopyEmbedToolbarButton: false,
 	autoCopyRegionEmbed: true,

@@ -2,6 +2,7 @@ import { distanceBetween, distanceToSegment, pathIntersectsPolygon, segmentsInte
 import { getShapeBounds, getStrokeBounds, getTextBounds } from "./bounds";
 import { getAnnotationRenderables } from "./renderOrder";
 import { clamp, generateId } from "../utils/general";
+import { distanceToShapeGeometry } from "../shapes/shapeGeometry";
 import type { AnnotationClipboardPayload, AnnotationPoint, ImageAnnotation, NormalizedRect, RegionReference, ShapeAnnotation, StrokeAnnotation, TextAnnotation } from "../types";
 
 export function getSelectionBoxPoints(start: AnnotationPoint, end: AnnotationPoint): AnnotationPoint[] {
@@ -111,7 +112,8 @@ export function cloneAnnotationsForPage(
 	strokes: StrokeAnnotation[],
 	textItems: TextAnnotation[],
 	shapes: ShapeAnnotation[],
-	pageNumber: number
+	pageNumber: number,
+	strokeIdMap?: Map<string, string>
 ): AnnotationClipboardPayload {
 	const payload: AnnotationClipboardPayload = {
 		strokes: [],
@@ -120,7 +122,9 @@ export function cloneAnnotationsForPage(
 	};
 	getAnnotationRenderables(strokes, textItems, shapes).forEach((renderable, index) => {
 		if (renderable.kind === "stroke") {
-			payload.strokes.push(JSON.parse(JSON.stringify({ ...renderable.annotation, id: generateId("stroke"), page: pageNumber, zIndex: renderable.annotation.zIndex ?? index })) as StrokeAnnotation);
+			const id = generateId("stroke");
+			strokeIdMap?.set(renderable.annotation.id, id);
+			payload.strokes.push(JSON.parse(JSON.stringify({ ...renderable.annotation, id, page: pageNumber, zIndex: renderable.annotation.zIndex ?? index })) as StrokeAnnotation);
 		} else if (renderable.kind === "text") {
 			payload.textItems.push(JSON.parse(JSON.stringify({ ...renderable.annotation, id: generateId("text"), page: pageNumber, zIndex: renderable.annotation.zIndex ?? index })) as TextAnnotation);
 		} else {
@@ -182,6 +186,7 @@ export function polygonIntersectsBounds(
 }
 
 export function distanceToShape(point: AnnotationPoint, shape: ShapeAnnotation): number {
+	if (shape.clippedGeometry || shape.tool === "triangle" || shape.tool === "line" && shape.lineStyle && shape.lineStyle !== "solid") return distanceToShapeGeometry(point, shape);
 	if (shape.tool === "line") {
 		return distanceToSegment(point, shape.start, shape.end);
 	}

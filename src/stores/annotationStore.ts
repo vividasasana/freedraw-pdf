@@ -1,3 +1,5 @@
+import { normalizeShapeFields } from "../shapes/shapeOptions";
+import { normalizeOcrGroups } from "../ocr/model";
 import { App, Notice, TFile } from "obsidian";
 import { ANNOTATION_FILE_SUFFIX, DEFAULT_SETTINGS } from "../config";
 import { normalizeInkRenderSettings } from "../settings/settingsController";
@@ -377,6 +379,7 @@ export class AnnotationStore {
 			}
 			const sourcePdfPath = typeof parsed.sourcePdf?.path === "string" ? parsed.sourcePdf.path : parsed.sourceFile;
 			const document: AnnotationDocument = {
+				...(Array.isArray(parsed.ocrGroups) ? { ocrGroups: normalizeOcrGroups(parsed.ocrGroups) } : {}),
 				version: Math.max(8, parsed.version ?? 4),
 				sourceFile: parsed.sourceFile ?? file.path,
 				sourcePdf: this.normalizeSourcePdf(parsed.sourcePdf, file),
@@ -404,7 +407,7 @@ export class AnnotationStore {
 					: [],
 				shapes: Array.isArray(parsed.shapes)
 					? parsed.shapes.map((shape) => ({
-							...shape,
+							...normalizeShapeFields(shape),
 							page: shape.page ?? 1
 						}))
 					: [],
@@ -482,6 +485,7 @@ export class AnnotationStore {
 							originalIndex: Math.max(0, Math.round(Number(entry.originalIndex) || 0)),
 							removedAt: entry.removedAt ?? new Date().toISOString(),
 							annotations: {
+								...(Array.isArray(entry.annotations?.ocrGroups) ? { ocrGroups: normalizeOcrGroups(entry.annotations.ocrGroups) } : {}),
 								strokes: Array.isArray(entry.annotations?.strokes)
 									? entry.annotations.strokes.map((stroke) => ({ ...stroke, page: stroke.page ?? 1 }))
 									: [],
@@ -496,7 +500,7 @@ export class AnnotationStore {
 									? entry.annotations.textItems.map((item) => ({ ...item, page: item.page ?? 1 }))
 									: [],
 								shapes: Array.isArray(entry.annotations?.shapes)
-									? entry.annotations.shapes.map((shape) => ({ ...shape, page: shape.page ?? 1 }))
+									? entry.annotations.shapes.map((shape) => ({ ...normalizeShapeFields(shape), page: shape.page ?? 1 }))
 									: [],
 								imageItems: Array.isArray(entry.annotations?.imageItems)
 									? entry.annotations.imageItems.map((image) => ({
@@ -571,7 +575,9 @@ export class AnnotationStore {
 			}
 			const expected = expectedPath === path ? expectedRaw : null;
 			let remoteAdditions: StrokeAnnotation[] = [];
-			if (!sameAnnotationContent(existing, expected ?? null)) {
+			// An older baseline is harmless when another view has already saved the
+			// exact same annotations. The guarded write below still rechecks disk.
+			if (!sameAnnotationContent(existing, expected ?? null) && !sameAnnotationContent(existing, payload)) {
 				const merged = existing === null ? null : mergeStrokeAdditions(expected ?? JSON.stringify(createEmptyDocument(file)), existing, payload);
 				if (!merged) throw new Error("Annotation data changed in another view or device. Your edits remain in this view; reopen after resolving the conflict.");
 				payload = merged.payload;

@@ -150,8 +150,8 @@ assertContains(
 assertContains(
 	"src/export/mixedDocumentExport.ts",
 	mixedDocumentExportTs,
-	"const pdfjsLib = await loadNativePdfJs();",
-	"mixed PDF export must await the same initialization path"
+	"return buildPdfWithOverlays(new Uint8Array(binary)",
+	"mixed PDF export must retain native content instead of rasterizing original pages"
 );
 assertContains(
 	"main.ts",

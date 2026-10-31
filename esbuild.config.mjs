@@ -2,9 +2,11 @@ import esbuild from "esbuild";
 import process from "node:process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 
 const prod = process.argv.includes("production");
 const projectDir = dirname(fileURLToPath(import.meta.url));
+const dependencyNotices = readFileSync(join(projectDir, "THIRD-PARTY-NOTICES.md"), "utf8").replace(/\*\//g, "* /");
 
 const context = await esbuild.context({
 	absWorkingDir: projectDir,
@@ -18,7 +20,7 @@ const context = await esbuild.context({
 	platform: "browser",
 	minify: prod,
 	banner: {
-		js: `if (!Promise.withResolvers) {
+		js: `/*!\n${dependencyNotices}\n*/\nif (!Promise.withResolvers) {
   Promise.withResolvers = function () {
     let resolve;
     let reject;

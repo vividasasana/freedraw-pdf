@@ -1,6 +1,8 @@
 import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
 import { PAPER_COLOR_PRESETS, TOOL_WIDTH_RANGES } from "../config";
-import type { InkEasingMode, InkInputPolicy, InkPressureMode, InkRenderSettings, LivePreviewMode, PDFAnnotatorSettings, ToolPreset, ToolStateSnapshot } from "../types";
+import { ocrSettingRows, type OcrSettingsHost } from "../ocr/settingsRows";
+import { shapeOptionRows } from "../ui/shapeOptionsRows";
+import type { InkEasingMode, InkInputPolicy, InkPressureMode, InkRenderSettings, LivePreviewMode, PDFAnnotatorSettings, ShapeOptions, ToolPreset, ToolStateSnapshot } from "../types";
 
 type SettingDefinitionCompat = {
 	name: string;
@@ -9,10 +11,16 @@ type SettingDefinitionCompat = {
 	visible?: () => boolean;
 };
 
-export interface PDFAnnotatorSettingsHost {
+export interface PDFAnnotatorSettingsHost extends OcrSettingsHost {
 	cleanAnnotationFiles(removeOrphans: boolean): Promise<void>;
 	restoreActiveAnnotationData(): Promise<void>;
 	getInlineToolbarPreference(): boolean;
+	shouldSeparateToolOptions(): boolean;
+	getToolbarFixedWidth(): number;
+	getToolbarAlignment(): "left" | "right";
+	getToolOptionsPresentation(): "menus" | "buttons";
+	getDrawingModifier(): PDFAnnotatorSettings["drawingModifier"];
+	getRightTriangleModifier(): PDFAnnotatorSettings["rightTriangleModifier"];
 	shouldShowRegionToolbarButton(): boolean;
 	shouldShowCopyEmbedToolbarButton(): boolean;
 	shouldAutoCopyRegionEmbed(): boolean;
@@ -27,9 +35,10 @@ export interface PDFAnnotatorSettingsHost {
 	getToolDefaults(): ToolStateSnapshot;
 	getStoredPresets(): ToolPreset[];
 	updateBehaviorSettings(
-		nextSettings: Partial<Pick<PDFAnnotatorSettings, "preferInlineToolbar" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "autoCopyRegionEmbed" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "quickAddPageSettings" | "autosaveDelayMs">>
+		nextSettings: Partial<Pick<PDFAnnotatorSettings, "preferInlineToolbar" | "separateToolOptions" | "toolbarFixedWidth" | "toolbarAlignment" | "toolOptionsPresentation" | "drawingModifier" | "rightTriangleModifier" | "showRegionToolbarButton" | "showCopyEmbedToolbarButton" | "autoCopyRegionEmbed" | "showAnnotatedEmbedHeader" | "showDrawingNotices" | "showRenderTelemetry" | "inkInputPolicy" | "livePreviewMode" | "inkRenderSettings" | "quickAddPageSettings" | "autosaveDelayMs">>
 	): Promise<void>;
 	updateToolPreferences(snapshot: ToolStateSnapshot, presets: ToolPreset[]): void;
+	updateShapeToolOptions(options: ShapeOptions): void;
 }
 
 export class PDFAnnotatorSettingTab extends PluginSettingTab {
@@ -41,6 +50,7 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 	// Share row renderers between searchable groups and the pre-1.13 fallback.
 	private buildSettingRows(): SettingDefinitionCompat[] {
 		return [
+			...shapeOptionRows(() => this.plugin.getToolDefaults().shapeOptions, options => this.plugin.updateShapeToolOptions(options)),
 			{
 				name: "Toolbar placement",
 				desc: "Keep annotation controls inside the PDF toolbar, or use a floating toolbar when another extension causes overlap.",
@@ -62,17 +72,36 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 			{
 				name: "Region capture button",
 				desc: "Show Region directly in the toolbar. When hidden, Region remains available from More.",
-				render: (setting) => {
-					setting
-						.setName("Region capture button")
-						.setDesc("Show Region directly in the toolbar. When hidden, Region remains available from More.")
-						.addToggle((toggle) => {
-							toggle
-								.setValue(this.plugin.shouldShowRegionToolbarButton())
-								.onChange(async (value) => {
-									await this.plugin.updateBehaviorSettings({ showRegionToolbarButton: value });
-								});
-						});
+				render: setting => {
+					setting.setName("Region capture button").setDesc("Show Region directly in the toolbar. When hidden, Region remains available from More.").addToggle(toggle => toggle.setValue(this.plugin.shouldShowRegionToolbarButton()).onChange(value => { void this.plugin.updateBehaviorSettings({ showRegionToolbarButton: value }); }));
+				}
+			},
+			{
+				name: "Toolbar alignment",
+				desc: "Align annotation controls to the left beside the PDF controls, or to the right. Both layouts can still scroll.",
+				render: setting => {
+					setting.setName("Toolbar alignment").setDesc("Align annotation controls to the left beside the PDF controls, or to the right. Both layouts can still scroll.").addDropdown(dropdown => dropdown.addOptions({ left: "Left", right: "Right" }).setValue(this.plugin.getToolbarAlignment()).onChange(value => { void this.plugin.updateBehaviorSettings({ toolbarAlignment: value === "right" ? "right" : "left" }); }));
+				}
+			},
+			{
+				name: "Tool options",
+				desc: "Show contextual text buttons, or open options by clicking the active tool icon. Colour, width and presets stay in the toolbar.",
+				render: setting => {
+					setting.setName("Tool options").setDesc("Show contextual text buttons, or open options by clicking the active tool icon. Colour, width and presets stay in the toolbar.").addDropdown(dropdown => dropdown.addOptions({ buttons: "Text buttons", menus: "Menus" }).setValue(this.plugin.getToolOptionsPresentation()).onChange(value => { void this.plugin.updateBehaviorSettings({ toolOptionsPresentation: value === "menus" ? "menus" : "buttons" }); }));
+				}
+			},
+			{
+				name: "Drawing modifier",
+				desc: "Hold for a solid straight Pen/Highlighter line, or a circle, square, equilateral triangle or snapped line in Shapes.",
+				render: setting => {
+					setting.setName("Drawing modifier").setDesc("Hold for a solid straight Pen/Highlighter line, or a circle, square, equilateral triangle or snapped line in Shapes.").addDropdown(dropdown => dropdown.addOptions({ shift: "Shift", alt: "Alt / Option", control: "Ctrl", meta: "Cmd / Windows", none: "Off" }).setValue(this.plugin.getDrawingModifier()).onChange(value => { void this.plugin.updateBehaviorSettings({ drawingModifier: value as PDFAnnotatorSettings["drawingModifier"] }); }));
+				}
+			},
+			{
+				name: "Right triangle modifier",
+				desc: "Hold during Shapes to fit a right triangle. Overrides the equilateral constraint; choose a different key from Drawing modifier.",
+				render: setting => {
+					setting.setName("Right triangle modifier").setDesc("Hold during Shapes to fit a right triangle. Overrides the equilateral constraint; choose a different key from Drawing modifier.").addDropdown(dropdown => dropdown.addOptions({ alt: "Alt / Option", shift: "Shift", control: "Ctrl", meta: "Cmd / Windows", none: "Off" }).setValue(this.plugin.getRightTriangleModifier()).onChange(value => { void this.plugin.updateBehaviorSettings({ rightTriangleModifier: value as PDFAnnotatorSettings["rightTriangleModifier"] }); }));
 				}
 			},
 			{
@@ -506,7 +535,8 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 	// Structural compatibility keeps the minimum supported API at 1.12.
 	// Obsidian 1.13+ renders and indexes these native groups; older versions use display().
 	getSettingDefinitions(): { type: "group"; heading: string; cls: string; items: SettingDefinitionCompat[] }[] {
-		const rows = new Map([...this.buildSettingRows(), ...this.getFileManagementRows()].map(row => [row.name, row]));
+		const shortcuts: SettingDefinitionCompat = { name: "Tool and preset shortcuts", desc: "Assign shortcuts in Settings → Hotkeys. Search Freedraw PDF for tools, drawing modes, preset slots and line styles.", render: setting => { setting.setName("Tool and preset shortcuts").setDesc("Assign shortcuts in Settings → Hotkeys. Search Freedraw PDF for Pen and Highlighter modes, preset slots, line styles, shape options and other tools. No shortcuts are assigned automatically."); } };
+		const rows = new Map([...this.buildSettingRows(), shortcuts, ...ocrSettingRows(this.plugin), ...this.getFileManagementRows()].map(row => [row.name, row]));
 		for (const name of ["Quick-add template", "Quick-add paper colour", "Automatic page style"]) {
 			const row = rows.get(name);
 			if (row) row.visible = () => true;
@@ -516,11 +546,14 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 			["Pen pressure", ["Pressure input", "Stroke width response", "Pressure curve"]],
 			["Stroke smoothing", ["Stabilization", "Width smoothing mode", "Stroke smoothing"]],
 			["Tool sizes", ["Pen width", "Highlighter width", "Eraser size"]],
+			["Shapes", ["Shape creation", "Drag shape", "Shape line style"]],
 			["Stroke ends", ["Taper start", "Taper end"]],
 			["Pages / Quick add", ["Quick-add template", "Quick-add paper colour", "Automatic page style"]],
-			["Toolbar", ["Toolbar placement", "Region capture button", "Copy embed button"]],
+			["Toolbar", ["Toolbar placement", "Toolbar alignment", "Tool options", "Drawing modifier", "Right triangle modifier", "Region capture button", "Copy embed button"]],
+			["Keyboard shortcuts", ["Tool and preset shortcuts"]],
 			["Markdown embeds", ["Automatic region embed copy", "Embed controls"]],
 			["Saving", ["Save delay"]],
+			["Handwriting recognition", ocrSettingRows(this.plugin).map(row=>row.name)],
 			["File management", ["Recover annotations from JSON", "Combine annotation JSON files", "Remove data for deleted PDFs"]],
 			["Debug", ["Action notices", "Rendering diagnostics"]]
 		];
@@ -544,16 +577,25 @@ export class PDFAnnotatorSettingTab extends PluginSettingTab {
 		renderSection("Pen pressure", ["Pressure input", "Stroke width response", "Pressure curve"]);
 		renderSection("Stroke smoothing", ["Stabilization", "Width smoothing mode", "Stroke smoothing"]);
 		renderSection("Tool sizes", ["Pen width", "Highlighter width", "Eraser size"]);
+		renderSection("Shapes", ["Shape creation", "Drag shape", "Shape line style"]);
 		renderSection("Stroke ends", ["Taper start", "Taper end"]);
 		const pages = renderSection("Pages / Quick add", []);
 		this.quickAddDefaultsEl = pages.createDiv({ cls: "freedraw-pdf-quick-add-defaults" });
 		this.renderSettingDefinitions(this.quickAddDefaultsEl, definitions, ["Quick-add template", "Quick-add paper colour", "Automatic page style"]);
 		this.syncQuickAddDefaultFields();
-		renderSection("Toolbar", ["Toolbar placement", "Region capture button", "Copy embed button"]);
+		renderSection("Toolbar", ["Toolbar placement", "Toolbar alignment", "Tool options", "Drawing modifier", "Right triangle modifier", "Region capture button", "Copy embed button"]);
+		const hotkeys = this.renderSettingsSection(containerEl, "Keyboard shortcuts");
+		new Setting(hotkeys).setName("Tool and preset shortcuts").setDesc("Assign shortcuts in Settings → Hotkeys. Search Freedraw PDF for Pen and Highlighter modes, preset slots, line styles, shape options and other tools. No shortcuts are assigned automatically.");
 		renderSection("Markdown embeds", ["Automatic region embed copy", "Embed controls"]);
 		renderSection("Saving", ["Save delay"]);
+		const recognition = this.renderSettingsSection(containerEl, "Handwriting recognition");
+		for (const row of ocrSettingRows(this.plugin)) row.render(new Setting(recognition));
 		const files = this.renderSettingsSection(containerEl, "File management");
 		for (const row of this.getFileManagementRows()) row.render(new Setting(files));
 		renderSection("Debug", ["Action notices", "Rendering diagnostics"]);
 	}
 }
+
+
+
+

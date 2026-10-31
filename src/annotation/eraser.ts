@@ -2,6 +2,7 @@ import { getShapeBounds, getTextBounds } from "./bounds";
 import { distanceBetween, distanceToSegment } from "./geometry";
 import { distanceBetweenSegments, distanceToShape, segmentIntersectsExpandedBounds } from "./interaction";
 import type { AnnotationDocument, AnnotationPoint, ImageAnnotation, ShapeAnnotation, StrokeAnnotation, TextAnnotation } from "../types";
+import { relativeShapeGeometry, shapeGeometry, shapeWidthScale, shapeIntersectsSegment } from "../shapes/shapeGeometry";
 
 interface Segment {
 	start: AnnotationPoint;
@@ -157,12 +158,13 @@ export function eraseStrokeSegmentsAlongPath(
 	pageNumber: number,
 	eraserPoints: AnnotationPoint[],
 	radiusScale: number,
-	createId: () => string
+	createId: () => string,
+	protectedIds?: ReadonlySet<string>
 ): boolean {
 	let changed = false;
 	const strokes: StrokeAnnotation[] = [];
 	for (const stroke of document.strokes) {
-		if (stroke.page !== pageNumber) {
+		if (stroke.page !== pageNumber || protectedIds?.has(stroke.id)) {
 			strokes.push(stroke);
 			continue;
 		}
@@ -173,6 +175,34 @@ export function eraseStrokeSegmentsAlongPath(
 	if (changed) {
 		document.strokes = strokes;
 	}
+	return changed;
+}
+
+/** Cut shared shape geometry without changing its wave/dash phase or converting it to handwriting. */
+export function eraseShapeSegmentsAlongPath(document: AnnotationDocument, pageNumber: number, eraserPoints: AnnotationPoint[], radiusScale: number): boolean {
+	let changed = false;
+	const shapes: ShapeAnnotation[] = [];
+	for (const shape of document.shapes) {
+		if (shape.page !== pageNumber) { shapes.push(shape); continue; }
+		const geometry = shapeGeometry(shape), paths: Array<Array<{ x: number; y: number }>> = [], dots: Array<{ x: number; y: number }> = [];
+		let shapeChanged = false;
+		const cut = (points: Array<{ x: number; y: number }>) => splitStrokeByEraserPath({
+			id: shape.id, page: shape.page, tool: shape.appearance ?? "pen", color: shape.color, width: shape.width,
+			widthScale: shapeWidthScale(shape), createdAt: shape.createdAt, points: points.map(point => ({ ...point, pressure: .5 }))
+		}, eraserPoints, radiusScale, () => shape.id);
+		for (const path of geometry.paths) {
+			const result = cut(path); shapeChanged = shapeChanged || result.changed;
+			paths.push(...result.strokes.map(stroke => stroke.points.map(({ x, y }) => ({ x, y }))));
+		}
+		for (const dot of geometry.dots) {
+			const result = cut([dot]); shapeChanged = shapeChanged || result.changed;
+			if (!result.changed) dots.push(dot);
+		}
+		if (!shapeChanged) { shapes.push(shape); continue; }
+		changed = true;
+		if (paths.length || dots.length) shapes.push({ ...shape, clippedGeometry: relativeShapeGeometry(shape, paths, dots) });
+	}
+	if (changed) document.shapes = shapes;
 	return changed;
 }
 
@@ -228,6 +258,7 @@ function pathTouchesImage(image: ImageAnnotation, segments: Segment[], threshold
 }
 
 function pathTouchesShape(shape: ShapeAnnotation, segments: Segment[], threshold: number): boolean {
+	if (shape.clippedGeometry || shape.tool === "triangle" || shape.tool === "line" && shape.lineStyle && shape.lineStyle !== "solid") return segments.some(s => shapeIntersectsSegment(shape, s.start, s.end, threshold));
 	if (shape.tool === "line") {
 		return segments.some((segment) => distanceBetweenSegments(segment.start, segment.end, shape.start, shape.end) <= threshold);
 	}

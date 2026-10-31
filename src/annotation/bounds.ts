@@ -1,5 +1,6 @@
 import type { GeometryBounds, GeometryPoint } from "./geometry";
 import { clamp } from "../utils/general";
+import { shapeGeometry } from "../shapes/shapeGeometry";
 
 export interface BoundedStroke<TPoint extends GeometryPoint = GeometryPoint> {
 	width: number;
@@ -8,6 +9,12 @@ export interface BoundedStroke<TPoint extends GeometryPoint = GeometryPoint> {
 }
 
 export interface BoundedShape<TPoint extends GeometryPoint = GeometryPoint> {
+	clippedGeometry?: { paths: GeometryPoint[][]; dots: GeometryPoint[] };
+	tool?: string;
+	lineStyle?: "solid" | "dashed" | "dotted" | "wavy";
+	waveSize?: number;
+	aspectRatio?: number;
+	vertices?: GeometryPoint[];
 	width: number;
 	widthScale?: number;
 	start: TPoint;
@@ -38,6 +45,12 @@ export function getNormalizedStrokePadding(width: number, widthScale?: number): 
 
 export function getShapeBounds(shape: BoundedShape): GeometryBounds {
 	const padding = getNormalizedStrokePadding(shape.width, shape.widthScale);
+	if (shape.clippedGeometry || shape.tool === "triangle" || shape.tool === "line" && shape.lineStyle && shape.lineStyle !== "solid") {
+		const geometry = shapeGeometry({ ...shape, start: { ...shape.start, pressure: .5 }, end: { ...shape.end, pressure: .5 } });
+		const points = [...geometry.paths.flat(), ...geometry.dots];
+		const verticalPadding = Math.max(padding, geometry.radius / geometry.aspect);
+		if (points.length) return { left: clamp(Math.min(...points.map(p => p.x)) - padding, 0, 1), right: clamp(Math.max(...points.map(p => p.x)) + padding, 0, 1), top: clamp(Math.min(...points.map(p => p.y)) - verticalPadding, 0, 1), bottom: clamp(Math.max(...points.map(p => p.y)) + verticalPadding, 0, 1) };
+	}
 	return {
 		left: clamp(Math.min(shape.start.x, shape.end.x) - padding, 0, 1),
 		right: clamp(Math.max(shape.start.x, shape.end.x) + padding, 0, 1),

@@ -1,4 +1,6 @@
 node_modules/
+.playwright-cli/
+.playwright/
 obsidian/
 backups/
 .agents/

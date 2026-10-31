@@ -1,3 +1,4 @@
+import type { OcrGroup } from "../ocr/model";
 import type {
 	AnnotationDocument,
 	EraserPathAnnotation,
@@ -9,7 +10,7 @@ import type {
 	TextAnnotation
 } from "../types";
 
-type PageAnnotation = StrokeAnnotation | EraserPathAnnotation | TextAnnotation | ShapeAnnotation | ImageAnnotation;
+type PageAnnotation = StrokeAnnotation | EraserPathAnnotation | TextAnnotation | ShapeAnnotation | ImageAnnotation | OcrGroup;
 
 function shiftPages<T extends PageAnnotation>(items: T[], fromPage: number, delta: -1 | 1): T[] {
 	return items.map((item) => item.page >= fromPage ? { ...item, page: item.page + delta } : item);
@@ -52,6 +53,7 @@ export function insertSyntheticPage(
 	document.textItems = shiftPages(document.textItems, pageNumber, 1);
 	document.shapes = shiftPages(document.shapes, pageNumber, 1);
 	document.imageItems = shiftPages(document.imageItems!, pageNumber, 1);
+	if (document.ocrGroups) document.ocrGroups = shiftPages(document.ocrGroups, pageNumber, 1);
 	pages.splice(boundedIndex, 0, page);
 	if (page.kind === "template") document.latestPageStyle = { template: page.template, paperColor: page.paperColor, pageSize: page.pageSize };
 	return pageNumber;
@@ -74,6 +76,7 @@ export function removeSyntheticPageToTrash(
 	const textResult = removePage(document.textItems, pageNumber);
 	const shapeResult = removePage(document.shapes, pageNumber);
 	const imageResult = removePage(document.imageItems!, pageNumber);
+	const ocrResult = removePage(document.ocrGroups ?? [], pageNumber);
 	const [page] = pages.splice(pageIndex, 1);
 	const removedPage: RemovedNotebookPage = {
 		page,
@@ -84,7 +87,8 @@ export function removeSyntheticPageToTrash(
 			eraserPaths: eraserResult.removed,
 			textItems: textResult.removed,
 			shapes: shapeResult.removed,
-			imageItems: imageResult.removed
+			imageItems: imageResult.removed,
+			...(ocrResult.removed.length ? { ocrGroups: ocrResult.removed } : {})
 		}
 	};
 	document.strokes = shiftPages(strokeResult.kept, pageNumber + 1, -1);
@@ -92,6 +96,7 @@ export function removeSyntheticPageToTrash(
 	document.textItems = shiftPages(textResult.kept, pageNumber + 1, -1);
 	document.shapes = shiftPages(shapeResult.kept, pageNumber + 1, -1);
 	document.imageItems = shiftPages(imageResult.kept, pageNumber + 1, -1);
+	if (document.ocrGroups) document.ocrGroups = shiftPages(ocrResult.kept, pageNumber + 1, -1);
 	document.removedPages = document.removedPages!.filter((entry) => entry.page.id !== page.id);
 	document.removedPages.push(removedPage);
 	return removedPage;
@@ -119,6 +124,7 @@ export function restoreSyntheticPageFromTrash(
 	document.textItems.push(...setAnnotationPage(removedPage.annotations.textItems, pageNumber));
 	document.shapes.push(...setAnnotationPage(removedPage.annotations.shapes, pageNumber));
 	document.imageItems!.push(...setAnnotationPage(removedPage.annotations.imageItems, pageNumber));
+	if (removedPage.annotations.ocrGroups?.length) (document.ocrGroups ??= []).push(...setAnnotationPage(removedPage.annotations.ocrGroups, pageNumber));
 	return pageNumber;
 }
 

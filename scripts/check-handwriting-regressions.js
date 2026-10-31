@@ -27,7 +27,7 @@ function session(names, globals = {}) {
 	vm.runInNewContext(ts.transpileModule(`class Session {${members.map(member => member.getText(tree)).join("\n")}} globalThis.Session = Session;`, {
 		compilerOptions: { target: ts.ScriptTarget.ES2020 }
 	}).outputText, context);
-	return new context.Session();
+	return Object.assign(new context.Session(), { pageResidency: { forget() {} } });
 }
 const failures = [];
 function check(label, fn) {

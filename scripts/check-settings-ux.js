@@ -7,35 +7,43 @@ class Element {
  addClass(cls){this.cls=cls;} empty(){this.children=[];this.scrollTop=0;this.emptyCalls=(this.emptyCalls||0)+1;}
 }
 class Component {
- constructor(){this.selectEl={options:[]};}
+ constructor(){this.selectEl={options:[],setAttribute(){}};this.inputEl={};}
  addOption(value,label){this.selectEl.options.push({value,label});return this;} setValue(v){this.value=v;return this;} onChange(fn){this.change=fn;return this;}
+	addOptions(values){for(const [value,label] of Object.entries(values))this.addOption(value,label);return this;}
  setLimits(){return this;} setDynamicTooltip(){return this;}
 	setButtonText(){return this;} setDisabled(){return this;} onClick(fn){this.click=fn;return this;}
+	setPlaceholder(){return this;}
 }
 class Setting {
  constructor(parent){this.node=parent.createDiv({cls:'setting-item'});this.settingEl=this.node;}
  setHeading(){this.node.heading=true;return this;} setName(v){this.node.name=v;return this;} setDesc(v){this.node.desc=v;return this;}
+ clear(){this.node.components=[];return this;}
  addDropdown(fn){this.node.component=new Component();(this.node.components??=[]).push(this.node.component);fn(this.node.component);return this;}
  addToggle(fn){return this.addDropdown(fn);} addSlider(fn){return this.addDropdown(fn);} addColorPicker(fn){return this.addDropdown(fn);}
 	addButton(fn){return this.addDropdown(fn);}
+	addText(fn){return this.addDropdown(fn);}
 }
 class PluginSettingTab {constructor(){this.containerEl=new Element();}}
+const Module=require('node:module'),previousLoad=Module._load;
+Module._load=function(id,parent,main){if(id==='obsidian')return {Setting,requestUrl:()=>{throw Error('Unexpected settings network call');}};return previousLoad.call(this,id,parent,main);};
 const file=path.resolve(__dirname,'../src/settings/settingTab.ts');
 const moduleShim={exports:{}};
 vm.runInNewContext(ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText,
  {module:moduleShim,exports:moduleShim.exports,require:name=>name==='obsidian'?{PluginSettingTab,Setting,Plugin:class{}}:loadSource(path.resolve(path.dirname(file),name+'.ts'))});
 const {DEFAULT_SETTINGS}=loadSource('src/config.ts');
 let quick={source:'previous',template:'grid',paperColor:'#ffffff'};
+let ocr={...DEFAULT_SETTINGS.ocrSettings};
 const plugin={getQuickAddPageSettings:()=>({...quick}),getInkRenderSettings:()=>DEFAULT_SETTINGS.inkRenderSettings,getToolDefaults:()=>DEFAULT_SETTINGS.toolDefaults,
- getStoredPresets:()=>[],getInkInputPolicy:()=> 'pen-mouse-only',getLivePreviewMode:()=> 'auto-smooth',getAutosaveDelayMs:()=>600,
- getInlineToolbarPreference:()=>true,shouldShowRegionToolbarButton:()=>false,shouldShowCopyEmbedToolbarButton:()=>false,
+ getOcrSettings:()=>({...ocr}),updateOcrSettings:s=>{ocr=s;},hasOcrCredential:()=>false,setOcrCredential:()=>{},
+ getStoredPresets:()=>[],getToolOptionsPresentation:()=> 'buttons',getInkInputPolicy:()=> 'pen-mouse-only',getLivePreviewMode:()=> 'auto-smooth',getAutosaveDelayMs:()=>600,
+ getInlineToolbarPreference:()=>true,shouldSeparateToolOptions:()=>false,getToolbarFixedWidth:()=>640,getToolbarAlignment:()=>"left",getDrawingModifier:()=>"shift",getRightTriangleModifier:()=>"alt",shouldShowRegionToolbarButton:()=>false,shouldShowCopyEmbedToolbarButton:()=>false,
  shouldAutoCopyRegionEmbed:()=>true,shouldShowAnnotatedEmbedHeader:()=>false,shouldShowDrawingNotices:()=>false,shouldShowRenderTelemetry:()=>false,
  updateBehaviorSettings:async patch=>{if(patch.quickAddPageSettings)quick=patch.quickAddPageSettings;},updateToolPreferences(){}};
 function flatten(node){return node.hidden?[]:[node,...node.children.flatMap(flatten)];}
 async function main(){
  const tab=new moduleShim.exports.PDFAnnotatorSettingTab({},plugin);
  const groups=tab.getSettingDefinitions();
- assert.equal(groups.length,11,'Searchable definitions preserve all section groups');
+ assert.equal(groups.length,14,'Searchable definitions preserve all section groups and add OCR and hotkey guidance');
  assert.equal(groups.flatMap(g=>g.items).find(r=>r.name==='Quick-add template').visible(),true);
  for(const group of groups)for(const row of group.items){assert.equal(row.render(new Setting(new Element())),undefined,'Render callbacks must return void');}
  tab.display();
@@ -43,7 +51,7 @@ async function main(){
  assert.ok(nodes.some(n=>n.name==='Default template')&&nodes.some(n=>n.name==='Default paper colour'),'Automatic inheritance must expose the first-page defaults');
  const headings=nodes.filter(n=>n.heading).map(n=>n.name);
  for(const heading of ['Drawing input','Pen pressure','Stroke smoothing','Tool sizes','Stroke ends','Pages / Quick add','Toolbar','Markdown embeds','Saving','File management','Debug'])assert.ok(headings.includes(heading),heading);
- assert.equal(nodes.filter(n=>n.cls==='freedraw-pdf-settings-group').length,11,'Sections need separate settings cards');
+ assert.equal(nodes.filter(n=>n.cls==='freedraw-pdf-settings-group').length,14,'Sections need separate settings cards');
  assert.ok(!nodes.some(n=>n.cls==='freedraw-pdf-settings-section-description'),'Section headings must not add subtitle rows outside the cards');
  for(const section of nodes.filter(n=>n.cls==='freedraw-pdf-settings-section')){
   assert.equal(section.children[0].heading,true);
@@ -82,4 +90,5 @@ async function main(){
  }
  console.log('Settings UX passed: aligned cards, preset/picker sync, one custom entry, persisted defaults and unchanged scroll position.');
 }
-main().catch(error=>{console.error(error);process.exitCode=1;});
+main().finally(()=>{Module._load=previousLoad;}).catch(error=>{console.error(error);process.exitCode=1;});
+

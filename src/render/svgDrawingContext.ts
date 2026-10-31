@@ -1,3 +1,4 @@
+import { annotationOpacity } from "../shapes/shapeOptions";
 import { ScrollPreviewCache } from "./scrollPreviewCache";
 import { buildContinuousInkGeometry } from "../ink/continuousInkGeometry";
 import { fillRoundedInkGeometry } from "../ink/inkEngine";
@@ -67,10 +68,10 @@ export class SvgDrawingContext {
 		const settings = stroke.inkSettings;
 		// Taper depends on total stroke length, so retain the full fitter for that case.
 		if (settings?.inkModel !== "continuous-v1" || settings.taperStart !== 0 || settings.taperEnd !== 0 || stroke.points.length < 2) return false;
-		const signature = `${this.width}:${this.height}:${baseWidth}:${stroke.color}:${stroke.tool}:${fast}:${JSON.stringify(settings)}`;
+		const signature = `${this.width}:${this.height}:${baseWidth}:${stroke.color}:${stroke.tool}:${stroke.opacity}:${fast}:${JSON.stringify(settings)}`;
 		let entry = this.liveCache.get(stroke);
 		if (!entry || entry.signature !== signature || entry.points !== stroke.points || stroke.points.length < entry.count) {
-			entry = { signature, node: this.fragment.createSvg("g", { attr: { opacity: stroke.tool === "highlighter" ? 0.24 : 0.96 } }), tail: null, end: 0, count: 0, points: stroke.points, lastPoint: null };
+			entry = { signature, node: this.fragment.createSvg("g", { attr: { opacity: annotationOpacity(stroke) } }), tail: null, end: 0, count: 0, points: stroke.points, lastPoint: null };
 			this.liveCache.set(stroke, entry);
 		}
 		const fit = (start: number, end: number): SVGElement | null => {
@@ -132,8 +133,12 @@ export class SvgDrawingContext {
 		this.ellipse(x, y, radius, radius, 0, start, end, anticlockwise);
 	}
 	ellipse(x: number, y: number, rx: number, ry: number, rotation: number, start: number, end: number, anticlockwise = false): void {
-		const point = (angle: number) => [x + rx * Math.cos(angle) * Math.cos(rotation) - ry * Math.sin(angle) * Math.sin(rotation),
-			y + rx * Math.cos(angle) * Math.sin(rotation) + ry * Math.sin(angle) * Math.cos(rotation)];
+		const cosRotation = rotation === 0 ? 1 : Math.cos(rotation), sinRotation = rotation === 0 ? 0 : Math.sin(rotation);
+		const point = (angle: number) => {
+			const cosine = Math.cos(angle), sine = Math.sin(angle);
+			return [x + rx * cosine * cosRotation - ry * sine * sinRotation,
+				y + rx * cosine * sinRotation + ry * sine * cosRotation];
+		};
 		const first = point(start);
 		if (this.path.length === 0) { this.moveTo(first[0], first[1]); } else { this.lineTo(first[0], first[1]); }
 		const sweep = anticlockwise ? 0 : 1;
@@ -152,9 +157,17 @@ export class SvgDrawingContext {
 	fillRect(x: number, y: number, width: number, height: number): void { const old = this.path; this.path = []; this.rect(x, y, width, height); this.fill(); this.path = old; }
 	strokeRect(x: number, y: number, width: number, height: number): void { const old = this.path; this.path = []; this.rect(x, y, width, height); this.stroke(); this.path = old; }
 	private paintPath(stroke: boolean): void {
-		if (this.path.length === 0 || this.path.some(value => typeof value === "number" && !Number.isFinite(value))) { return; }
+		if (this.path.length === 0) { return; }
+		const encoded: (string | number)[] = new Array(this.path.length);
+		for (let index = 0; index < this.path.length; index++) {
+			const value = this.path[index];
+			if (typeof value === "number") {
+				if (!Number.isFinite(value)) return;
+				encoded[index] = Math.round(value * 1000) / 1000;
+			} else encoded[index] = value;
+		}
 		const node = this.fragment.createSvg("path", { attr: {
-			d: this.path.map(value => typeof value === "number" ? Math.round(value * 1000) / 1000 : value).join(" "), fill: stroke ? "none" : String(this.fillStyle), "fill-rule": "nonzero",
+			d: encoded.join(" "), fill: stroke ? "none" : String(this.fillStyle), "fill-rule": "nonzero",
 			stroke: stroke ? String(this.strokeStyle) : "none", "stroke-width": this.lineWidth,
 			"stroke-linecap": this.lineCap, "stroke-linejoin": this.lineJoin,
 			"stroke-dasharray": this.dash.length ? this.dash.join(" ") : "none", opacity: this.globalAlpha
@@ -198,7 +211,10 @@ export class SvgAnnotationRenderer {
 	private readonly scrollPreviews = new ScrollPreviewCache();
 	prepareMotionPreview(root: SVGSVGElement, isCurrent: () => boolean): Promise<boolean> {
 		const state = this.layers.get(root);
-		if (!state || state.mask || state.bodyRecords.size < 80) return Promise.resolve(false);
+		if (!state || state.mask) return Promise.resolve(false);
+		// Stroke count alone misses pages with a few very dense pressure outlines.
+		// This bounded estimate runs only during idle preparation, never per scroll.
+		if(state.bodyRecords.size<80 && this.getRetainedCost(root,80,256*1024).bytes<256*1024)return Promise.resolve(false);
 		return this.scrollPreviews.prepare(root, state.body, state.width, state.height, isCurrent);
 	}
 	showMotionPreview(root: SVGSVGElement): boolean { return this.scrollPreviews.show(root); }
@@ -207,6 +223,27 @@ export class SvgAnnotationRenderer {
 	hasCommittedFrame(root: SVGSVGElement): boolean {
 		const state = this.layers.get(root);
 		return !!state && state.width > 0 && state.height > 0;
+	}
+	/** Bounded accounting performed once when a page leaves the viewport, never per scroll frame. */
+	getRetainedCost(root: SVGSVGElement, maxNodes = 6000, maxBytes = 32 * 1024 * 1024): { nodes: number; bytes: number } {
+		let nodes = 0, bytes = 0;
+		const pending: Element[] = [root];
+		while (pending.length) {
+			const node = pending.pop();
+			if (!node) break;
+			// An estimate, not a browser heap measurement: include DOM bookkeeping and UTF-16 attributes.
+			bytes += 768;
+			for (const attribute of Array.from(node.attributes)) bytes += 2 * (attribute.name.length + attribute.value.length);
+			if (node.localName === "text") bytes += 2 * (node.textContent?.length ?? 0);
+			if (node.localName === "image") {
+				const width = Number(node.getAttribute("width")), height = Number(node.getAttribute("height"));
+				if (Number.isFinite(width) && Number.isFinite(height)) bytes += Math.max(0, width * height * 4);
+			}
+			if (++nodes > maxNodes || bytes > maxBytes) return { nodes: Infinity, bytes: Infinity };
+			if (nodes + pending.length + node.children.length > maxNodes) return { nodes: Infinity, bytes: Infinity };
+			for (const child of Array.from(node.children)) pending.push(child);
+		}
+		return { nodes, bytes };
 	}
 	private state(root: SVGSVGElement): LayerState {
 		let state = this.layers.get(root);
@@ -275,5 +312,10 @@ export class SvgAnnotationRenderer {
 			fill: "none", stroke: "black", "stroke-width": radius * 2 * state.width / Math.max(pageWidth, 1), "stroke-linecap": "round" } });
 		void pageHeight;
 	}
-	release(root: SVGSVGElement): void { this.scrollPreviews.invalidate(root); root.replaceChildren(); this.layers.delete(root); }
+	release(root: SVGSVGElement, preservePreview = false): void {
+		if (!preservePreview || !this.scrollPreviews.retainPreviewOnly(root)) {
+			this.scrollPreviews.invalidate(root); root.replaceChildren();
+		}
+		this.layers.delete(root);
+	}
 }

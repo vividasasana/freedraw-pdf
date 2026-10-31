@@ -43,9 +43,3 @@ Before submitting:
 4. Verify controls remain usable in Obsidian desktop and mobile layouts when the change affects UI or input.
 
 By submitting a contribution, you agree that it may be distributed under the repository's [MIT License](LICENSE).
-
-## Prepare a release
-
-Use the next unused version in the 0.13.x series, such as `0.13.3`. Keep `manifest.json`, `package.json`, `package-lock.json`, and `versions.json` consistent. The Git tag must be the version alone, without a prefix or development-folder name.
-
-Add release notes in `docs/releases/`, run the checks and production build, then push the version tag. GitHub Actions publishes the plugin files and ZIP from the tagged source. On Windows, `npm run package` creates a local ZIP in `dist/`.
