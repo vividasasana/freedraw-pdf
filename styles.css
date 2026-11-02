@@ -1348,13 +1348,18 @@
 }
 
 .pdf-native-annotator-stroke-button {
+	box-sizing: border-box;
+	flex: 0 0 68px;
+	width: 68px;
+	max-width: 68px;
+	white-space: nowrap;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
 	gap: 3px;
-	min-width: 52px;
+	min-width: 68px;
 	height: 30px;
-	padding: 0 12px;
+	padding: 0 6px;
 	border: 1px solid var(--background-modifier-border);
 	border-radius: var(--button-radius);
 	background: var(--interactive-normal);
@@ -1376,6 +1381,7 @@
 }
 
 .pdf-native-annotator-stroke-icon {
+	flex-shrink: 0;
 	display: inline-flex;
 	color: var(--interactive-accent);
 }
@@ -2001,9 +2007,9 @@
 	}
 
 	.pdf-native-annotator-stroke-button {
-		flex: 0 0 auto;
-		min-width: 64px;
-		padding-inline: 12px;
+		flex: 0 0 68px;
+		min-width: 68px;
+		padding-inline: 6px;
 	}
 
 	.pdf-native-annotator-text-button,

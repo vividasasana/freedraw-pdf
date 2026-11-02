@@ -23,5 +23,5 @@ for(const [tool,min,max,step] of [['pen',1,48,.5],['highlighter',4,64,.5],['eras
 }
 assert.ok(!source.includes('bindContinuousWidthSlider'),'Remove experimental slider handling');
 const css=fs.readFileSync(path.join(root,'styles.css'),'utf8'),button=css.match(/^\.pdf-native-annotator-stroke-button \{[^}]*\}/m)[0];
-assert.ok(button.includes('min-width: 52px'));assert.ok(!button.includes('width: 64px'));assert.ok(button.includes('padding: 0 12px'));
-console.log('PASS numeric thickness button has modest extra horizontal space');
+assert.ok(button.includes('width: 68px'));assert.ok(button.includes('min-width: 68px'));assert.ok(button.includes('max-width: 68px'));assert.ok(button.includes('flex: 0 0 68px'));assert.ok(button.includes('padding: 0 6px'));
+console.log('PASS numeric thickness button keeps its compact size across digit changes');
